@@ -1,3 +1,7 @@
+use iced::pure::Application;
+
+mod app;
+
 fn main() {
-    println!("Hello, world!");
+    app::Levent::run(iced::Settings::with_flags(())).unwrap();
 }
