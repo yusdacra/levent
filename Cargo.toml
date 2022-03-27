@@ -1,0 +1,16 @@
+[package]
+license = "unlicense"
+description = "hydrus but better"
+name = "levent"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+
+[package.metadata.nix]
+# Toggle app flake output
+app = true
+# Toggle flake outputs that build (checks, package and app)
+build = true
