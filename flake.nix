@@ -17,6 +17,8 @@
       perSystem = {pkgs, system, ...}: {
         devShells.default = pkgs.mkShell {
           packages = [
+            pkgs.pkg-config
+            pkgs.gtk3
             zig.packages.${system}.master
             (pkgs.runCommand "zigmod-r84" {
               nativeBuildInputs = [pkgs.autoPatchelfHook];
