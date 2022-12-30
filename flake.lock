@@ -87,8 +87,7 @@
       "inputs": {
         "flake-parts": "flake-parts",
         "nixpkgs": "nixpkgs",
-        "zig": "zig",
-        "zigmod-binary": "zigmod-binary"
+        "zig": "zig"
       }
     },
     "zig": {
@@ -108,18 +107,6 @@
         "owner": "mitchellh",
         "repo": "zig-overlay",
         "type": "github"
-      }
-    },
-    "zigmod-binary": {
-      "flake": false,
-      "locked": {
-        "narHash": "sha256-JLvTPPXtgl1hrTSQaF/BqYJG/We2XwgBAoYkC7Et+sU=",
-        "type": "file",
-        "url": "https://github.com/nektro/zigmod/releases/download/r84/zigmod-x86_64-linux"
-      },
-      "original": {
-        "type": "file",
-        "url": "https://github.com/nektro/zigmod/releases/download/r84/zigmod-x86_64-linux"
       }
     }
   },
