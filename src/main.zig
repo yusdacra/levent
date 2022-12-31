@@ -3,6 +3,7 @@ const ui = @import("./gui/ui.zig");
 
 const std = @import("std");
 const zglfw = @import("zglfw");
+const zgui = @import("zgui");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -34,6 +35,9 @@ pub fn main() !void {
         return;
     };
     defer ui_state.deinit(allocator);
+
+    // we should be initialized here
+    zgui.io.setIniFilename(null);
 
     while (!window.shouldClose() and window.getKey(.escape) != .press) {
         zglfw.pollEvents();
