@@ -37,7 +37,7 @@ pub const UiState = struct {
         defer zgui.end();
 
         // content
-        zgui.beginTable("areas", .{ .columns = 2, .flags = .{ .sizing = .fixed_fit } });
+        zgui.beginTable("areas", .{ .column = 2, .flags = .{ .sizing = .fixed_fit } });
         _ = zgui.tableNextColumn();
         if (zgui.button("test", .{})) {
             std.debug.print("aaaaaaaaaaaaaaa", .{});
