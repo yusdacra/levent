@@ -17,24 +17,19 @@
         system,
         ...
       }: {
-        devShells.default = pkgs.mkShell {
-          packages = [
-            zig.packages.${system}.master
-            (pkgs.runCommand "dawn" {
-                dawnSrc = pkgs.fetchurl {
-                  url = "https://github.com/hexops/mach-gpu-dawn/releases/latest/download/x86_64-linux-gnu_release-fast.tar.gz";
-                  sha256 = "sha256-hMEKWKWRgK6MgOfbYJBvfrGVla9pBv67gWdNkLLtvJI=";
-                };
-                buildInputs = [pkgs.gzip pkgs.gnutar];
-              } ''
-                tar -xf $dawnSrc
-
-                mkdir -p $out/lib
-                mv include $out/include
-                mv libdawn.a $out/lib
-              '')
-          ];
-        };
+        devShells.default =
+          let
+            runtimeLibs = with pkgs; [
+              xorg.libX11
+              vulkan-loader
+            ];
+          in
+          pkgs.mkShell {
+            packages = runtimeLibs ++ [
+              zig.packages.${system}.master
+            ];
+            LD_LIBRARY_PATH = "${pkgs.lib.makeLibraryPath runtimeLibs}";
+          };
       };
     };
 }
