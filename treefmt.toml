@@ -1,0 +1,9 @@
+[formatter.zig]
+command = "zig"
+options = ["fmt"]
+includes = [ "*.zig" ]
+
+[formatter.nix]
+command = "alejandra"
+options = []
+includes = [ "*.nix" ]
