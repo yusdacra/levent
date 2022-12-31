@@ -17,17 +17,18 @@
         system,
         ...
       }: {
-        devShells.default =
-          let
-            runtimeLibs = with pkgs; [
-              xorg.libX11
-              vulkan-loader
-            ];
-          in
+        devShells.default = let
+          runtimeLibs = with pkgs; [
+            xorg.libX11
+            vulkan-loader
+          ];
+        in
           pkgs.mkShell {
-            packages = runtimeLibs ++ [
-              zig.packages.${system}.master
-            ];
+            packages =
+              runtimeLibs
+              ++ [
+                zig.packages.${system}.master
+              ];
             LD_LIBRARY_PATH = "${pkgs.lib.makeLibraryPath runtimeLibs}";
           };
       };

@@ -1,5 +1,3 @@
-zig-cache/
-zig-out/
-
-.zigmod
-deps.zig
+/zig-cache/
+/zig-out/
+/imgui.ini
