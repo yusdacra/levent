@@ -22,7 +22,7 @@ pub const UiState = struct {
         const size = image.fit_to_width_size(width);
         const id_str = img.image_id_to_str(id);
         if (zgui.imageButton(id_str, tex_id, .{ .w = size[0], .h = size[1] })) {
-            std.debug.print("clicked image {s}\n", .{std.fmt.fmtSliceHexLower(id_str)});
+            print("clicked image {s}\n", .{std.fmt.fmtSliceHexLower(id_str)});
         }
     }
 
@@ -63,7 +63,7 @@ pub const UiState = struct {
         });
         _ = zgui.tableNextColumn();
         if (zgui.button("test", .{})) {
-            std.debug.print("aaaaaaaaaaaaaaa", .{});
+            print("aaaaaaaaaaaaaaa", .{});
         }
         if (zgui.button("quit", .{})) {
             self.quit = true;
@@ -78,7 +78,7 @@ pub const UiState = struct {
         const max_width = zgui.getWindowContentRegionMax()[0];
         const avail_width = max_width - line_args.offset_from_start_x;
         // TODO: this should come from some sort of settings
-        const items_per_line: usize = 5;
+        const items_per_line: usize = 6;
         const width_per_item = avail_width / @intToFloat(f32, items_per_line);
         // TODO: probably replace this with a proper usage of some scroll area
         // but it's whatever for now lol
