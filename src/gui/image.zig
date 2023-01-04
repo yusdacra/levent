@@ -2,7 +2,20 @@ const std = @import("std");
 const zgpu = @import("zgpu");
 const zstbi = @import("zstbi");
 
+const assert = std.debug.assert;
+
+pub const ImageId = u128;
+
+pub fn image_id_to_str(id: ImageId) [:0]const u8 {
+    var buf: [40:0]u8 = undefined;
+    return std.fmt.bufPrintZ(&buf, "{}", .{id}) catch unreachable;
+}
+
 pub fn scale_image_size(scale: f32, width: u32, height: u32) [2]f32 {
+    assert(scale != 0.0);
+    assert(width != 0);
+    assert(height != 0);
+
     const w = @intToFloat(f32, width);
     const h = @intToFloat(f32, height);
 
@@ -13,13 +26,22 @@ pub fn scale_image_size(scale: f32, width: u32, height: u32) [2]f32 {
     return .{ new_width, new_height };
 }
 
+pub inline fn hash_image_data(data: []const u8) ImageId {
+    return std.hash.Fnv1a_128.hash(data);
+}
+
 pub const ImageHandle = struct {
     texture: zgpu.TextureViewHandle,
     width: u32,
     height: u32,
+    id: ImageId,
 
     pub inline fn scaled_size(self: *const ImageHandle, scale: f32) [2]f32 {
         return scale_image_size(scale, self.width, self.height);
+    }
+
+    pub inline fn fit_to_width_size(self: *const ImageHandle, width: u32) [2]f32 {
+        return self.scaled_size(@intToFloat(f32, width) / @intToFloat(f32, self.width));
     }
 };
 
@@ -61,22 +83,25 @@ pub fn load_image(gctx: *zgpu.GraphicsContext, image_path: [:0]const u8) !ImageH
         .texture = texture_view,
         .width = image.width,
         .height = image.height,
+        .id = hash_image_data(image.data),
     };
 }
 
+const InternalImageMap = std.AutoHashMap(ImageId, ImageHandle);
 pub const ImageMap = struct {
-    map: std.StringHashMap(ImageHandle),
+    map: InternalImageMap,
 
-    pub inline fn add(self: *ImageMap, id: []const u8, handle: ImageHandle) void {
-        self.map.put(id, handle) catch std.debug.panic("couldn't allocate", .{});
+    pub inline fn add(self: *ImageMap, handle: ImageHandle) void {
+        self.map.put(handle.id, handle) catch std.debug.panic("couldn't allocate", .{});
     }
 
-    pub fn load(self: *ImageMap, gctx: *zgpu.GraphicsContext, id: []const u8, image_path: [:0]const u8) !void {
+    pub fn load(self: *ImageMap, gctx: *zgpu.GraphicsContext, image_path: [:0]const u8) !ImageId {
         const handle = try load_image(gctx, image_path);
-        self.add(id, handle);
+        defer self.add(handle);
+        return handle.id;
     }
 
-    pub fn get(self: *const ImageMap, id: []const u8) ?ImageHandle {
+    pub fn get(self: *const ImageMap, id: ImageId) ?ImageHandle {
         return self.map.get(id);
     }
 
@@ -86,7 +111,7 @@ pub const ImageMap = struct {
 };
 
 pub fn create_image_map(allocator: std.mem.Allocator) ImageMap {
-    const hashmap = std.StringHashMap(ImageHandle).init(allocator);
+    const hashmap = InternalImageMap.init(allocator);
     return ImageMap{
         .map = hashmap,
     };

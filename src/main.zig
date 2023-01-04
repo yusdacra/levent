@@ -50,7 +50,7 @@ pub fn main() !void {
     while (!window.shouldClose() and window.getKey(.escape) != .press and !ui_state.quit) {
         zglfw.pollEvents();
         graphics_state.new_frame();
-        ui_state.draw(graphics_state);
+        ui_state.draw();
         graphics_state.draw();
     }
 }
