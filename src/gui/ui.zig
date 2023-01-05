@@ -27,13 +27,38 @@ pub const UiState = struct {
     gfx: *graphics.GraphicsState,
     quit: bool = false,
 
-    fn add_image(self: *const UiState, id: img.ImageId, width: u32) bool {
+    fn load_image(self: *UiState, path: [:0]const u8) !void {
+        const id = try self.images.load(self.gfx.gctx, path);
+        try self.image_states.put(id, .{});
+        try self.image_ids.append(id);
+    }
+
+    fn add_image(self: *const UiState, id: img.ImageId, both_size: u32) bool {
         const image = self.images.get(id).?;
         const tex_id = self.gfx.gctx.lookupResource(image.texture).?;
-        const size = image.fit_to_width_size(width);
+        const is_wide = image.width > image.height;
+        const size = size: {
+            if (is_wide) {
+                break :size image.fit_to_width_size(both_size);
+            } else {
+                break :size image.fit_to_height_size(both_size);
+            }
+        };
+        const padding = pad: {
+            if (is_wide) {
+                break :pad [_]f32{ 0.0, (@intToFloat(f32, both_size) - size[1]) / 2.0 };
+            } else {
+                break :pad [_]f32{ (@intToFloat(f32, both_size) - size[0]) / 2.0, 0.0 };
+            }
+        };
+
         var buf = img.id.new_str_buf();
         const id_str = img.id.to_str(id, &buf);
-        return zgui.imageButton(id_str, tex_id, .{ .w = size[0], .h = size[1] });
+
+        uitils.pushStyleVar(.frame_padding, .{ padding[0], padding[1] });
+        const clicked = zgui.imageButton(id_str, tex_id, .{ .w = size[0], .h = size[1] });
+        uitils.popStyleVars(1);
+        return clicked;
     }
 
     fn show_image_window(self: *UiState, id: img.ImageId, is_open: *bool) void {
@@ -137,6 +162,7 @@ pub const UiState = struct {
         // the images //
         zgui.endTable();
     }
+
     pub fn deinit(self: *UiState, allocator: std.mem.Allocator) void {
         self.images.deinit();
         self.image_ids.deinit();
@@ -148,20 +174,14 @@ pub const UiState = struct {
 
 pub fn create(allocator: std.mem.Allocator, graphics_state: *graphics.GraphicsState) !*UiState {
     const state = try allocator.create(UiState);
-    var image_map = img.create_image_map(allocator);
-    const id1 = try image_map.load(graphics_state.gctx, "/home/patriot/proj/levent/test.png");
-    const id2 = try image_map.load(graphics_state.gctx, "/home/patriot/.config/wallpaper");
-    var image_states = ImageStates.init(allocator);
-    try image_states.put(id2, .{});
-    try image_states.put(id1, .{});
-    var image_ids = std.ArrayList(img.ImageId).init(allocator);
-    try image_ids.append(id2);
-    try image_ids.append(id1);
     state.* = .{
-        .images = image_map,
-        .image_ids = image_ids,
-        .image_states = image_states,
+        .images = img.create_image_map(allocator),
+        .image_ids = std.ArrayList(img.ImageId).init(allocator),
+        .image_states = ImageStates.init(allocator),
         .gfx = graphics_state,
     };
+    try state.load_image("/home/patriot/proj/levent/test.png");
+    try state.load_image("/home/patriot/.config/wallpaper");
+    try state.load_image("/home/patriot/Downloads/qrxdzs5oeb7a1.png");
     return state;
 }

@@ -48,7 +48,11 @@ pub const ImageHandle = struct {
     }
 
     pub inline fn fit_to_width_size(self: *const ImageHandle, width: u32) [2]f32 {
-        return self.scaled_size(@intToFloat(f32, width) / @intToFloat(f32, self.width));
+        return self.scaled_size(@intToFloat(f32, width) / self.widthf());
+    }
+
+    pub inline fn fit_to_height_size(self: *const ImageHandle, height: u32) [2]f32 {
+        return self.scaled_size(@intToFloat(f32, height) / self.heightf());
     }
 
     pub inline fn widthf(self: *const ImageHandle) f32 {
