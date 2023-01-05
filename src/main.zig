@@ -47,7 +47,7 @@ pub fn main() !void {
     // we should be initialized here
     zgui.io.setIniFilename(null);
 
-    while (!window.shouldClose() and window.getKey(.escape) != .press and !ui_state.quit) {
+    while (!window.shouldClose() and !ui_state.quit) {
         zglfw.pollEvents();
         graphics_state.new_frame();
         ui_state.draw();

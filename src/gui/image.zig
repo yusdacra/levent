@@ -4,12 +4,23 @@ const zstbi = @import("zstbi");
 
 const assert = std.debug.assert;
 
-pub const ImageId = u128;
+pub const id = struct {
+    pub const ImageId = u128;
+    pub const ImageIdStrBuf = [40]u8;
 
-pub fn image_id_to_str(id: ImageId) [:0]const u8 {
-    var buf: [40:0]u8 = undefined;
-    return std.fmt.bufPrintZ(&buf, "{}", .{id}) catch unreachable;
-}
+    pub inline fn new_str_buf() ImageIdStrBuf {
+        return std.mem.zeroes(ImageIdStrBuf);
+    }
+
+    pub inline fn to_str(image_id: id.ImageId, buf: *ImageIdStrBuf) [:0]const u8 {
+        return std.fmt.bufPrintZ(buf, "{d}", .{image_id}) catch unreachable;
+    }
+
+    pub inline fn hash(data: []const u8) id.ImageId {
+        return std.hash.Fnv1a_128.hash(data);
+    }
+};
+pub const ImageId = id.ImageId;
 
 pub fn scale_image_size(scale: f32, width: u32, height: u32) [2]f32 {
     assert(scale != 0.0);
@@ -26,10 +37,6 @@ pub fn scale_image_size(scale: f32, width: u32, height: u32) [2]f32 {
     return .{ new_width, new_height };
 }
 
-pub inline fn hash_image_data(data: []const u8) ImageId {
-    return std.hash.Fnv1a_128.hash(data);
-}
-
 pub const ImageHandle = struct {
     texture: zgpu.TextureViewHandle,
     width: u32,
@@ -42,6 +49,14 @@ pub const ImageHandle = struct {
 
     pub inline fn fit_to_width_size(self: *const ImageHandle, width: u32) [2]f32 {
         return self.scaled_size(@intToFloat(f32, width) / @intToFloat(f32, self.width));
+    }
+
+    pub inline fn widthf(self: *const ImageHandle) f32 {
+        return @intToFloat(f32, self.width);
+    }
+
+    pub inline fn heightf(self: *const ImageHandle) f32 {
+        return @intToFloat(f32, self.height);
     }
 };
 
@@ -83,7 +98,7 @@ pub fn load_image(gctx: *zgpu.GraphicsContext, image_path: [:0]const u8) !ImageH
         .texture = texture_view,
         .width = image.width,
         .height = image.height,
-        .id = hash_image_data(image.data),
+        .id = id.hash(image.data),
     };
 }
 
@@ -101,8 +116,8 @@ pub const ImageMap = struct {
         return handle.id;
     }
 
-    pub fn get(self: *const ImageMap, id: ImageId) ?ImageHandle {
-        return self.map.get(id);
+    pub fn get(self: *const ImageMap, image_id: ImageId) ?ImageHandle {
+        return self.map.get(image_id);
     }
 
     pub fn deinit(self: *ImageMap) void {
