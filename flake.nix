@@ -27,6 +27,8 @@
             packages =
               runtimeLibs
               ++ [
+                pkgs.gtk3
+                pkgs.pkg-config
                 zig.packages.${system}.master
               ];
             LD_LIBRARY_PATH = "${pkgs.lib.makeLibraryPath runtimeLibs}";

@@ -5,6 +5,7 @@ const utils = @import("../utils.zig");
 
 const std = @import("std");
 const zgui = @import("zgui");
+const nfd = @import("nfd");
 
 const print = std.debug.print;
 
@@ -26,6 +27,40 @@ pub const UiState = struct {
     image_ids: std.ArrayList(img.ImageId),
     gfx: *graphics.GraphicsState,
     quit: bool = false,
+    alloc: std.mem.Allocator,
+
+    fn select_image(self: *UiState) !void {
+        const file_path = try nfd.openFileDialog(null, null);
+        if (file_path) |path| {
+            defer nfd.freePath(path);
+            try self.load_image(path);
+        }
+    }
+
+    fn select_folder(self: *UiState) !void {
+        const maybe_dir_path = try nfd.openFolderDialog(null);
+        if (maybe_dir_path) |dir_path| {
+            defer nfd.freePath(dir_path);
+            var dir = try std.fs.openIterableDirAbsoluteZ(dir_path, .{});
+            var walker = try dir.walk(self.alloc);
+            defer walker.deinit();
+
+            while (try walker.next()) |entry| {
+                if (entry.kind == .File) {
+                    const file_path = try std.fmt.allocPrintZ(
+                        self.alloc,
+                        "{s}/{s}",
+                        .{ dir_path, entry.path },
+                    );
+                    defer self.alloc.destroy(file_path.ptr);
+                    print("started loading image on path {s}\n", .{file_path});
+                    self.load_image(file_path) catch |err| {
+                        print("could not load image: {}\n", .{err});
+                    };
+                }
+            }
+        }
+    }
 
     fn load_image(self: *UiState, path: [:0]const u8) !void {
         const id = try self.images.load(self.gfx.gctx, path);
@@ -118,21 +153,37 @@ pub const UiState = struct {
         defer zgui.end();
 
         // content
-        zgui.beginTable("areas", .{ .column = 2 });
+        zgui.beginTable("areas", .{
+            .column = 2,
+            .flags = .{
+                .borders = zgui.TableBorderFlags.inner,
+                .resizable = true,
+            },
+        });
         zgui.tableSetupColumn("main buttons", .{
-            .init_width_or_height = 100,
+            .init_width_or_height = 150,
             .flags = .{
                 .width_fixed = true,
-                .no_resize = true,
                 .no_reorder = true,
             },
         });
         _ = zgui.tableNextColumn();
-        if (zgui.button("test", .{})) {
-            print("aaaaaaaaaaaaaaa", .{});
-        }
+        var search_buf = std.mem.zeroes([1024:0]u8);
+        zgui.pushItemWidth(150.0);
+        _ = zgui.inputTextWithHint("###search", .{ .hint = "enter tags to search", .buf = search_buf[0..] });
+        zgui.popItemWidth();
         if (zgui.button("quit", .{})) {
             self.quit = true;
+        }
+        if (zgui.button("add image", .{})) {
+            self.select_image() catch |err| {
+                print("could not add image: {}\n", .{err});
+            };
+        }
+        if (zgui.button("add folder", .{})) {
+            self.select_folder() catch |err| {
+                print("could not add folder: {}\n", .{err});
+            };
         }
         _ = zgui.tableNextColumn();
         // the images //
@@ -152,7 +203,7 @@ pub const UiState = struct {
         _ = zgui.tableNextColumn();
         // actually add the images
         var i: usize = 0;
-        zgui.sameLine(line_args);
+        zgui.sameLine(.{});
         while (i < self.image_ids.items.len) : (i += 1) {
             const image_id = self.image_ids.items[i];
             const state = self.image_states.getPtr(image_id).?;
@@ -164,10 +215,8 @@ pub const UiState = struct {
             }
             if (zgui.getItemRectMax()[0] + width_per_item > max_width) {
                 zgui.newLine();
-                zgui.sameLine(line_args);
-            } else {
-                zgui.sameLine(.{});
             }
+            zgui.sameLine(.{});
         }
         zgui.endTable();
         // the images //
@@ -190,9 +239,7 @@ pub fn create(allocator: std.mem.Allocator, graphics_state: *graphics.GraphicsSt
         .image_ids = std.ArrayList(img.ImageId).init(allocator),
         .image_states = ImageStates.init(allocator),
         .gfx = graphics_state,
+        .alloc = allocator,
     };
-    try state.load_image("/home/patriot/proj/levent/test.png");
-    try state.load_image("/home/patriot/.config/wallpaper");
-    try state.load_image("/home/patriot/Downloads/qrxdzs5oeb7a1.png");
     return state;
 }

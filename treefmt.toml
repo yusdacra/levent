@@ -2,6 +2,7 @@
 command = "zig"
 options = ["fmt"]
 includes = [ "*.zig" ]
+excludes = ["libs/**"]
 
 [formatter.nix]
 command = "alejandra"

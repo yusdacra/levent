@@ -7,6 +7,7 @@ const zglfw = @import("libs/zig-gamedev/libs/zglfw/build.zig");
 const zgpu = @import("libs/zig-gamedev/libs/zgpu/build.zig");
 const zpool = @import("libs/zig-gamedev/libs/zpool/build.zig");
 const zstbi = @import("libs/zig-gamedev/libs/zstbi/build.zig");
+const nfdzig = @import("libs/nfd-zig/build.zig");
 
 pub fn build(b: *std.build.Builder) !void {
     // Standard target options allows the person running `zig build` to choose
@@ -32,6 +33,7 @@ pub fn build(b: *std.build.Builder) !void {
     exe.addPackage(zglfw.pkg);
     exe.addPackage(zgpu_pkg);
     exe.addPackage(zstbi.pkg);
+    exe.addPackage(nfdzig.getPackage("nfd"));
 
     exe.setTarget(target);
     exe.setBuildMode(mode);
@@ -41,6 +43,7 @@ pub fn build(b: *std.build.Builder) !void {
     zgui.link(exe, zgui_options);
     zglfw.link(exe);
     zstbi.link(exe);
+    exe.linkLibrary(nfdzig.makeLib(b, mode, target));
 
     const run_cmd = exe.run();
     run_cmd.step.dependOn(b.getInstallStep());
