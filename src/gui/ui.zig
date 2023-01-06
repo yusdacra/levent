@@ -75,10 +75,21 @@ pub const UiState = struct {
         _ = zgui.begin(id_str, .{ .popen = is_open });
         defer zgui.end();
 
+        // the image
         const image = self.images.get(id).?;
-        const size = image.fit_to_width_size(@floatToInt(u32, zgui.getWindowSize()[0]));
+        const size = image.fit_to_width_size(@floatToInt(u32, zgui.getWindowSize()[0]) - 120);
         const tex_id = self.gfx.gctx.lookupResource(image.texture).?;
+        _ = zgui.beginChild("image", .{ .w = size[0], .h = size[1] });
         zgui.image(tex_id, .{ .w = size[0], .h = size[1] });
+        zgui.endChild();
+        // image and metadata or on the "same line"
+        zgui.sameLine(.{});
+        // the metadata
+        _ = zgui.beginChild("image_metadata", .{});
+        zgui.text("Metadata", .{});
+        zgui.text("width: {d}", .{image.width});
+        zgui.text("height: {d}", .{image.height});
+        zgui.endChild();
     }
 
     pub fn draw(self: *UiState) void {
