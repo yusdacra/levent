@@ -16,7 +16,7 @@ const ImageState = struct {
 };
 const ImageStates = std.AutoHashMap(img.ImageId, ImageState);
 
-pub const UiState = struct {
+const ImagesState = struct {
     // loaded images
     images: img.ImageMap,
     // ui states
@@ -25,15 +25,50 @@ pub const UiState = struct {
     // this is separated from image states so that we can sort these
     // at anytime without also accessing the states.
     image_ids: std.ArrayList(img.ImageId),
+    lock: std.Thread.RwLock = std.Thread.RwLock{},
     gfx: *graphics.GraphicsState,
+
+    fn load_image(self: *ImagesState, path: [:0]const u8) !void {
+        var image = try img.decode_image(path);
+        const handle = img.load_image(self.gfx.gctx, image);
+        image.deinit();
+        self.lock.lock();
+        defer self.lock.unlock();
+        try self.images.add(handle);
+        try self.image_states.put(handle.id, .{});
+        try self.image_ids.append(handle.id);
+    }
+
+    inline fn get_image(self: *ImagesState, id: img.ImageId) ?img.ImageHandle {
+        self.lock.lockShared();
+        defer self.lock.unlockShared();
+        return self.images.get(id);
+    }
+
+    inline fn get_state(self: *ImagesState, id: img.ImageId) ?*ImageState {
+        self.lock.lockShared();
+        defer self.lock.unlockShared();
+        return self.image_states.getPtr(id);
+    }
+
+    fn deinit(self: *ImagesState) void {
+        self.images.deinit();
+        self.image_ids.deinit();
+        self.image_states.deinit();
+    }
+};
+
+pub const UiState = struct {
+    images_state: ImagesState,
     quit: bool = false,
     alloc: std.mem.Allocator,
+    gfx: *graphics.GraphicsState,
 
     fn select_image(self: *UiState) !void {
         const file_path = try nfd.openFileDialog(null, null);
         if (file_path) |path| {
             defer nfd.freePath(path);
-            try self.load_image(path);
+            try self.images_state.load_image(path);
         }
     }
 
@@ -54,7 +89,7 @@ pub const UiState = struct {
                     );
                     defer self.alloc.destroy(file_path.ptr);
                     print("started loading image on path {s}\n", .{file_path});
-                    self.load_image(file_path) catch |err| {
+                    self.images_state.load_image(file_path) catch |err| {
                         print("could not load image: {}\n", .{err});
                     };
                 }
@@ -62,14 +97,8 @@ pub const UiState = struct {
         }
     }
 
-    fn load_image(self: *UiState, path: [:0]const u8) !void {
-        const id = try self.images.load(self.gfx.gctx, path);
-        try self.image_states.put(id, .{});
-        try self.image_ids.append(id);
-    }
-
-    fn add_image(self: *const UiState, id: img.ImageId, both_size: u32) bool {
-        const image = self.images.get(id).?;
+    fn add_image(self: *UiState, id: img.ImageId, both_size: u32) bool {
+        const image = self.images_state.get_image(id).?;
         const tex_id = self.gfx.gctx.lookupResource(image.texture).?;
         const is_wide = image.width > image.height;
         const size = size: {
@@ -97,21 +126,42 @@ pub const UiState = struct {
     }
 
     fn show_image_window(self: *UiState, id: img.ImageId, is_open: *bool) void {
+        const image = self.images_state.get_image(id).?;
+        // set initial window size
         const viewport_size = zgui.getMainViewport().getWorkSize();
+        const initial_window_size = size: {
+            const style = zgui.getStyle();
+            if (image.width > image.height) {
+                if (image.width > @floatToInt(u32, viewport_size[0])) {
+                    break :size image.fit_to_width_size(@floatToInt(
+                        u32,
+                        viewport_size[0] - style.window_padding[0] * 2,
+                    ));
+                }
+            } else {
+                if (image.height > @floatToInt(u32, viewport_size[1])) {
+                    break :size image.fit_to_height_size(@floatToInt(
+                        u32,
+                        viewport_size[1] - style.window_padding[1] * 2,
+                    ));
+                }
+            }
+            break :size [_]f32{ image.widthf(), image.heightf() };
+        };
         zgui.setNextWindowSize(.{
-            .w = viewport_size[0] / 2.0,
-            .h = viewport_size[1] / 2.0,
+            .w = initial_window_size[0],
+            .h = initial_window_size[1],
             .cond = .first_use_ever,
         });
 
+        // get image id
         var buf = img.id.new_str_buf();
         const id_str = img.id.to_str(id, &buf);
-
+        // create window
         _ = zgui.begin(id_str, .{ .popen = is_open });
         defer zgui.end();
 
         // the image
-        const image = self.images.get(id).?;
         const size = image.fit_to_width_size(@floatToInt(u32, zgui.getWindowSize()[0]) - 120);
         const tex_id = self.gfx.gctx.lookupResource(image.texture).?;
         _ = zgui.beginChild("image", .{ .w = size[0], .h = size[1] });
@@ -167,24 +217,30 @@ pub const UiState = struct {
                 .no_reorder = true,
             },
         });
+
         _ = zgui.tableNextColumn();
-        var search_buf = std.mem.zeroes([1024:0]u8);
         zgui.pushItemWidth(150.0);
+        var search_buf = std.mem.zeroes([1024:0]u8);
         _ = zgui.inputTextWithHint("###search", .{ .hint = "enter tags to search", .buf = search_buf[0..] });
         zgui.popItemWidth();
+
         if (zgui.button("quit", .{})) {
             self.quit = true;
         }
+
         if (zgui.button("add image", .{})) {
             self.select_image() catch |err| {
                 print("could not add image: {}\n", .{err});
             };
         }
+
         if (zgui.button("add folder", .{})) {
-            self.select_folder() catch |err| {
-                print("could not add folder: {}\n", .{err});
+            var thread = std.Thread.spawn(.{}, UiState.select_folder, .{self}) catch |err| {
+                std.debug.panic("cannot spawn thread: {}", .{err});
             };
+            thread.detach();
         }
+
         _ = zgui.tableNextColumn();
         // the images //
         const style = zgui.getStyle();
@@ -204,9 +260,10 @@ pub const UiState = struct {
         // actually add the images
         var i: usize = 0;
         zgui.sameLine(.{});
-        while (i < self.image_ids.items.len) : (i += 1) {
-            const image_id = self.image_ids.items[i];
-            const state = self.image_states.getPtr(image_id).?;
+        self.images_state.lock.lockShared();
+        while (i < self.images_state.image_ids.items.len) : (i += 1) {
+            const image_id = self.images_state.image_ids.items[i];
+            const state = self.images_state.get_state(image_id).?;
             if (self.add_image(image_id, @floatToInt(u32, width_per_item))) {
                 state.is_open = true;
             }
@@ -218,15 +275,14 @@ pub const UiState = struct {
             }
             zgui.sameLine(.{});
         }
+        self.images_state.lock.unlockShared();
         zgui.endTable();
         // the images //
         zgui.endTable();
     }
 
     pub fn deinit(self: *UiState, allocator: std.mem.Allocator) void {
-        self.images.deinit();
-        self.image_ids.deinit();
-        self.image_states.deinit();
+        self.images_state.deinit();
         allocator.destroy(self);
         // gfx is deinitialized in main.zig
     }
@@ -235,11 +291,14 @@ pub const UiState = struct {
 pub fn create(allocator: std.mem.Allocator, graphics_state: *graphics.GraphicsState) !*UiState {
     const state = try allocator.create(UiState);
     state.* = .{
-        .images = img.create_image_map(allocator),
-        .image_ids = std.ArrayList(img.ImageId).init(allocator),
-        .image_states = ImageStates.init(allocator),
-        .gfx = graphics_state,
+        .images_state = .{
+            .images = img.create_image_map(allocator),
+            .image_ids = std.ArrayList(img.ImageId).init(allocator),
+            .image_states = ImageStates.init(allocator),
+            .gfx = graphics_state,
+        },
         .alloc = allocator,
+        .gfx = graphics_state,
     };
     return state;
 }

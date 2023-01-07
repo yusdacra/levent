@@ -65,10 +65,11 @@ pub const ImageHandle = struct {
 };
 
 // this function assumes zstbi is initialized.
-pub fn load_image(gctx: *zgpu.GraphicsContext, image_path: [:0]const u8) !ImageHandle {
-    var image = try zstbi.Image.init(image_path, 4);
-    defer image.deinit();
+pub inline fn decode_image(image_path: [:0]const u8) !zstbi.Image {
+    return try zstbi.Image.init(image_path, 4);
+}
 
+pub fn load_image(gctx: *zgpu.GraphicsContext, image: zstbi.Image) ImageHandle {
     // Create a texture.
     const texture = gctx.createTexture(.{
         .usage = .{ .texture_binding = true, .copy_dst = true },
@@ -110,14 +111,8 @@ const InternalImageMap = std.AutoHashMap(ImageId, ImageHandle);
 pub const ImageMap = struct {
     map: InternalImageMap,
 
-    pub inline fn add(self: *ImageMap, handle: ImageHandle) void {
-        self.map.put(handle.id, handle) catch std.debug.panic("couldn't allocate", .{});
-    }
-
-    pub fn load(self: *ImageMap, gctx: *zgpu.GraphicsContext, image_path: [:0]const u8) !ImageId {
-        const handle = try load_image(gctx, image_path);
-        defer self.add(handle);
-        return handle.id;
+    pub inline fn add(self: *ImageMap, handle: ImageHandle) !void {
+        try self.map.put(handle.id, handle);
     }
 
     pub fn get(self: *const ImageMap, image_id: ImageId) ?ImageHandle {

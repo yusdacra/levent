@@ -17,13 +17,43 @@
         system,
         ...
       }: {
+        packages.default = pkgs.stdenvNoCC.mkDerivation {
+          pname = "levent";
+          version = "master";
+
+          src = ./.;
+
+          buildInputs = [
+            pkgs.libxcrypt
+            pkgs.gtk3
+          ];
+          nativeBuildInputs = [
+            pkgs.pkg-config
+            zig.packages.${system}.master
+          ];
+
+          dontConfigure = true;
+          dontCheck = true;
+
+          preBuild = "export HOME=$TMPDIR";
+          buildPhase = ''
+            runHook preBuild
+            zig build
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            mv zig-out $out
+            runHook postInstall
+          '';
+        };
         devShells.default = let
           runtimeLibs = with pkgs; [
             xorg.libX11
             vulkan-loader
           ];
         in
-          pkgs.mkShell {
+          (pkgs.mkShell.override {stdenv = pkgs.stdenvNoCC;}) {
             packages =
               runtimeLibs
               ++ [
@@ -32,6 +62,7 @@
                 zig.packages.${system}.master
               ];
             LD_LIBRARY_PATH = "${pkgs.lib.makeLibraryPath runtimeLibs}";
+            ZLIB_LIBRARY_PATH = "${pkgs.zlib}/lib";
           };
       };
     };
