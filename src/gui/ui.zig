@@ -5,11 +5,16 @@ const utils = @import("../utils.zig");
 
 const std = @import("std");
 const zgui = @import("zgui");
+const zstbi = @import("zstbi");
 const nfd = @import("nfd");
+const ring_buffer = @import("zig-ring-buffer");
 
 const print = std.debug.print;
 
 pub const window_title = "levent";
+
+const RingBuffer = ring_buffer.RingBuffer;
+const Image = zstbi.Image;
 
 const ImageState = struct {
     is_open: bool = false,
@@ -25,29 +30,20 @@ const ImagesState = struct {
     // this is separated from image states so that we can sort these
     // at anytime without also accessing the states.
     image_ids: std.ArrayList(img.ImageId),
-    lock: std.Thread.RwLock = std.Thread.RwLock{},
     gfx: *graphics.GraphicsState,
 
-    fn load_image(self: *ImagesState, path: [:0]const u8) !void {
-        var image = try img.decode_image(path);
+    fn load_image(self: *ImagesState, image: *const Image) !void {
         const handle = img.load_image(self.gfx.gctx, image);
-        image.deinit();
-        self.lock.lock();
-        defer self.lock.unlock();
         try self.images.add(handle);
         try self.image_states.put(handle.id, .{});
         try self.image_ids.append(handle.id);
     }
 
     inline fn get_image(self: *ImagesState, id: img.ImageId) ?img.ImageHandle {
-        self.lock.lockShared();
-        defer self.lock.unlockShared();
         return self.images.get(id);
     }
 
     inline fn get_state(self: *ImagesState, id: img.ImageId) ?*ImageState {
-        self.lock.lockShared();
-        defer self.lock.unlockShared();
         return self.image_states.getPtr(id);
     }
 
@@ -55,46 +51,81 @@ const ImagesState = struct {
         self.images.deinit();
         self.image_ids.deinit();
         self.image_states.deinit();
+        // gfx is deinit in main.zig so it's fine
     }
 };
+
+fn impl_select_image(buffer: *RingBuffer(Image)) !void {
+    const file_path = try nfd.openFileDialog(null, null);
+    if (file_path) |path| {
+        defer nfd.freePath(path);
+        var image = try img.decode_image(path);
+        // trust that we will deinit the image later (hopefully!)
+        buffer.produce(image) catch |err| {
+            std.debug.print("ring buffer err: {}", .{err});
+            image.deinit();
+        };
+    }
+}
+
+fn impl_select_folder(buffer: *RingBuffer(Image), alloc: std.mem.Allocator) !void {
+    const maybe_dir_path = try nfd.openFolderDialog(null);
+    if (maybe_dir_path) |dir_path| {
+        defer nfd.freePath(dir_path);
+        var dir = try std.fs.openIterableDirAbsoluteZ(dir_path, .{});
+        var walker = try dir.walk(alloc);
+        defer walker.deinit();
+
+        while (try walker.next()) |entry| {
+            if (entry.kind == .File) {
+                const file_path = try std.fmt.allocPrintZ(
+                    alloc,
+                    "{s}/{s}",
+                    .{ dir_path, entry.path },
+                );
+                defer alloc.destroy(file_path.ptr);
+                print("started loading image on path {s}\n", .{file_path});
+                var image = img.decode_image(file_path) catch |err| {
+                    print("could not decode image: {}\n", .{err});
+                    continue;
+                };
+                // trust that we will deinit the image later (hopefully!)
+                buffer.produce(image) catch |err| {
+                    std.debug.print("ring buffer err: {}", .{err});
+                    image.deinit();
+                };
+            }
+        }
+    }
+}
 
 pub const UiState = struct {
     images_state: ImagesState,
     quit: bool = false,
     alloc: std.mem.Allocator,
     gfx: *graphics.GraphicsState,
+    image_buffer: *RingBuffer(Image),
 
-    fn select_image(self: *UiState) !void {
-        const file_path = try nfd.openFileDialog(null, null);
-        if (file_path) |path| {
-            defer nfd.freePath(path);
-            try self.images_state.load_image(path);
-        }
+    fn select_image(self: *UiState) void {
+        var thread = std.Thread.spawn(
+            .{},
+            impl_select_image,
+            .{self.image_buffer},
+        ) catch |err| {
+            std.debug.panic("cannot spawn thread: {}", .{err});
+        };
+        thread.detach();
     }
 
-    fn select_folder(self: *UiState) !void {
-        const maybe_dir_path = try nfd.openFolderDialog(null);
-        if (maybe_dir_path) |dir_path| {
-            defer nfd.freePath(dir_path);
-            var dir = try std.fs.openIterableDirAbsoluteZ(dir_path, .{});
-            var walker = try dir.walk(self.alloc);
-            defer walker.deinit();
-
-            while (try walker.next()) |entry| {
-                if (entry.kind == .File) {
-                    const file_path = try std.fmt.allocPrintZ(
-                        self.alloc,
-                        "{s}/{s}",
-                        .{ dir_path, entry.path },
-                    );
-                    defer self.alloc.destroy(file_path.ptr);
-                    print("started loading image on path {s}\n", .{file_path});
-                    self.images_state.load_image(file_path) catch |err| {
-                        print("could not load image: {}\n", .{err});
-                    };
-                }
-            }
-        }
+    fn select_folder(self: *UiState) void {
+        var thread = std.Thread.spawn(
+            .{},
+            impl_select_folder,
+            .{ self.image_buffer, self.alloc },
+        ) catch |err| {
+            std.debug.panic("cannot spawn thread: {}", .{err});
+        };
+        thread.detach();
     }
 
     fn add_image(self: *UiState, id: img.ImageId, both_size: u32) bool {
@@ -178,6 +209,25 @@ pub const UiState = struct {
     }
 
     pub fn draw(self: *UiState) void {
+        // before *everything*, load in images!
+        {
+            var image: ?Image = image: {
+                break :image self.image_buffer.consume() catch {
+                    break :image null;
+                };
+            };
+            while (image != null) {
+                self.images_state.load_image(&image.?) catch |err| {
+                    std.debug.print("could not load image: {}", .{err});
+                };
+                image.?.deinit();
+                image = image: {
+                    break :image self.image_buffer.consume() catch {
+                        break :image null;
+                    };
+                };
+            }
+        }
         // set main window size and position to entire viewport
         const viewport = zgui.getMainViewport();
         const viewport_pos = viewport.getWorkPos();
@@ -229,16 +279,11 @@ pub const UiState = struct {
         }
 
         if (zgui.button("add image", .{})) {
-            self.select_image() catch |err| {
-                print("could not add image: {}\n", .{err});
-            };
+            self.select_image();
         }
 
         if (zgui.button("add folder", .{})) {
-            var thread = std.Thread.spawn(.{}, UiState.select_folder, .{self}) catch |err| {
-                std.debug.panic("cannot spawn thread: {}", .{err});
-            };
-            thread.detach();
+            self.select_folder();
         }
 
         _ = zgui.tableNextColumn();
@@ -260,7 +305,6 @@ pub const UiState = struct {
         // actually add the images
         var i: usize = 0;
         zgui.sameLine(.{});
-        self.images_state.lock.lockShared();
         while (i < self.images_state.image_ids.items.len) : (i += 1) {
             const image_id = self.images_state.image_ids.items[i];
             const state = self.images_state.get_state(image_id).?;
@@ -275,7 +319,6 @@ pub const UiState = struct {
             }
             zgui.sameLine(.{});
         }
-        self.images_state.lock.unlockShared();
         zgui.endTable();
         // the images //
         zgui.endTable();
@@ -283,12 +326,17 @@ pub const UiState = struct {
 
     pub fn deinit(self: *UiState, allocator: std.mem.Allocator) void {
         self.images_state.deinit();
+        self.image_buffer.deinit();
+        allocator.destroy(self.image_buffer);
         allocator.destroy(self);
         // gfx is deinitialized in main.zig
     }
 };
 
 pub fn create(allocator: std.mem.Allocator, graphics_state: *graphics.GraphicsState) !*UiState {
+    var image_buffer = try allocator.create(RingBuffer(Image));
+    try image_buffer.init(128, allocator);
+
     const state = try allocator.create(UiState);
     state.* = .{
         .images_state = .{
@@ -297,6 +345,7 @@ pub fn create(allocator: std.mem.Allocator, graphics_state: *graphics.GraphicsSt
             .image_states = ImageStates.init(allocator),
             .gfx = graphics_state,
         },
+        .image_buffer = image_buffer,
         .alloc = allocator,
         .gfx = graphics_state,
     };

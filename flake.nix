@@ -2,11 +2,15 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     zig.url = "github:mitchellh/zig-overlay";
+    zls.url = "github:zigtools/zls";
+    zls.inputs.zig-overlay.follows = "zig";
+    zls.inputs.nixpkgs.follows = "nixpkgs";
     flake-parts.url = "github:hercules-ci/flake-parts";
   };
 
   outputs = {
     zig,
+    zls,
     flake-parts,
     ...
   } @ inputs:
@@ -60,6 +64,7 @@
                 pkgs.gtk3
                 pkgs.pkg-config
                 zig.packages.${system}.master
+                zls.packages.${system}.zls
               ];
             LD_LIBRARY_PATH = "${pkgs.lib.makeLibraryPath runtimeLibs}";
             ZLIB_LIBRARY_PATH = "${pkgs.zlib}/lib";

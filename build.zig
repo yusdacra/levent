@@ -43,6 +43,10 @@ pub fn build(b: *std.build.Builder) !void {
     exe.addPackage(zgpu_pkg);
     exe.addPackage(zstbi.pkg);
     exe.addPackage(nfdzig.getPackage("nfd"));
+    exe.addPackage(.{
+        .name = "zig-ring-buffer",
+        .source = .{ .path = thisDir() ++ "/libs/zig-ring-buffer/src/main.zig" },
+    });
 
     exe.setTarget(target);
     exe.setBuildMode(mode);
@@ -62,4 +66,8 @@ pub fn build(b: *std.build.Builder) !void {
 
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
+}
+
+inline fn thisDir() []const u8 {
+    return comptime std.fs.path.dirname(@src().file) orelse ".";
 }
