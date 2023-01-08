@@ -12,11 +12,11 @@ pub fn main() !void {
 
     const allocator = gpa.allocator();
 
-    var arena_state = std.heap.ArenaAllocator.init(allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
+    // var arena_state = std.heap.ArenaAllocator.init(allocator);
+    // defer arena_state.deinit();
 
-    zstbi.init(arena);
+    // zstbi.init(arena_state.allocator());
+    zstbi.init(allocator);
     defer zstbi.deinit();
 
     zglfw.init() catch {

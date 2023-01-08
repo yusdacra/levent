@@ -60,10 +60,12 @@ fn impl_select_image(buffer: *RingBuffer(Image)) !void {
     if (file_path) |path| {
         defer nfd.freePath(path);
         var image = try img.decode_image(path);
+        var thumbnail = img.make_thumbnail(&image);
+        image.deinit();
         // trust that we will deinit the image later (hopefully!)
-        buffer.produce(image) catch |err| {
+        buffer.produce(thumbnail) catch |err| {
             std.debug.print("ring buffer err: {}", .{err});
-            image.deinit();
+            thumbnail.deinit();
         };
     }
 }
@@ -89,10 +91,12 @@ fn impl_select_folder(buffer: *RingBuffer(Image), alloc: std.mem.Allocator) !voi
                     print("could not decode image: {}\n", .{err});
                     continue;
                 };
+                var thumbnail = img.make_thumbnail(&image);
+                image.deinit();
                 // trust that we will deinit the image later (hopefully!)
-                buffer.produce(image) catch |err| {
+                buffer.produce(thumbnail) catch |err| {
                     std.debug.print("ring buffer err: {}", .{err});
-                    image.deinit();
+                    thumbnail.deinit();
                 };
             }
         }

@@ -37,6 +37,24 @@ pub fn scale_image_size(scale: f32, width: u32, height: u32) [2]f32 {
     return .{ new_width, new_height };
 }
 
+pub fn make_thumbnail(image: *const zstbi.Image) zstbi.Image {
+    const max_size = 200;
+    const scale = if (image.width > image.height)
+        (@intToFloat(f32, max_size) / @intToFloat(f32, image.width))
+    else
+        (@intToFloat(f32, max_size) / @intToFloat(f32, image.height));
+    const size = scale_image_size(
+        scale,
+        image.width,
+        image.height,
+    );
+    const thumb = image.resize(
+        @floatToInt(u32, size[0]),
+        @floatToInt(u32, size[1]),
+    );
+    return thumb;
+}
+
 pub const ImageHandle = struct {
     texture: zgpu.TextureViewHandle,
     width: u32,
