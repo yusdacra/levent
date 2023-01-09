@@ -23,13 +23,15 @@ pub fn build(b: *std.build.Builder) !void {
     const exe = b.addExecutable("levent", "src/main.zig");
 
     const build_options = b.addOptions();
-    build_options.addOption(bool, "enable_tsan", false);
+    build_options.addOption(bool, "enable-tsan", false);
     exe.addOptions("build_options", build_options);
 
-    if (b.option(bool, "enable_tsan", "Enable thread sanitizer") orelse false) {
+    if (b.option(bool, "enable-tsan", "Enable thread sanitizer") orelse false) {
         exe.sanitize_thread = true;
     }
-    exe.addLibraryPath(std.os.getenv("ZLIB_LIBRARY_PATH").?);
+    if (std.os.getenv("ZLIB_LIBPATH")) |path| {
+        exe.addLibraryPath(path);
+    }
 
     // Needed for glfw/wgpu rendering backend
     const zgpu_options = zgpu.BuildOptionsStep.init(b, .{});

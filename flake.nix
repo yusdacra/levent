@@ -17,18 +17,27 @@
     flake-parts.lib.mkFlake {inherit inputs;} {
       systems = ["x86_64-linux"];
       perSystem = {
+        config,
         pkgs,
         system,
         ...
-      }: {
-        packages.default = pkgs.stdenvNoCC.mkDerivation {
+      }: let
+        runtimeLibs = with pkgs; [
+          xorg.libX11
+          vulkan-loader
+        ];
+      in {
+        packages.default = config.packages.levent;
+        packages.levent = config.packages.levent-debug.overrideAttrs (old: {
+          ZIG_FLAGS = ["-Drelease-safe=true"];
+        });
+        packages.levent-debug = pkgs.stdenvNoCC.mkDerivation {
           pname = "levent";
           version = "master";
 
           src = ./.;
 
           buildInputs = [
-            pkgs.libxcrypt
             pkgs.gtk3
           ];
           nativeBuildInputs = [
@@ -36,39 +45,40 @@
             zig.packages.${system}.master
           ];
 
+          ZLIB_LIBPATH = "${pkgs.zlib}/lib";
+          ZIG_FLAGS = [];
+
           dontConfigure = true;
           dontCheck = true;
+          dontInstall = true;
 
           preBuild = "export HOME=$TMPDIR";
           buildPhase = ''
             runHook preBuild
-            zig build
+            zig build install $ZIG_FLAGS -Dcpu=baseline --prefix $out
             runHook postBuild
           '';
-          installPhase = ''
-            runHook preInstall
-            mv zig-out $out
-            runHook postInstall
+          fixupPhase = ''
+            runHook preFixup
+            # patchelf \
+            #   --set-rpath "${pkgs.lib.makeLibraryPath (runtimeLibs ++ [pkgs.glib pkgs.gtk3])}" \
+            #   --set-interpreter "${pkgs.bintools.dynamicLinker}" \
+            #   "$out/bin/levent"
+            runHook postFixup
           '';
         };
-        devShells.default = let
-          runtimeLibs = with pkgs; [
-            xorg.libX11
-            vulkan-loader
-          ];
-        in
-          (pkgs.mkShell.override {stdenv = pkgs.stdenvNoCC;}) {
-            packages =
-              runtimeLibs
-              ++ [
-                pkgs.gtk3
-                pkgs.pkg-config
-                zig.packages.${system}.master
-                zls.packages.${system}.zls
-              ];
-            LD_LIBRARY_PATH = "${pkgs.lib.makeLibraryPath runtimeLibs}";
-            ZLIB_LIBRARY_PATH = "${pkgs.zlib}/lib";
-          };
+        devShells.default = (pkgs.mkShell.override {stdenv = pkgs.stdenvNoCC;}) {
+          packages =
+            runtimeLibs
+            ++ [
+              pkgs.gtk3
+              pkgs.pkg-config
+              zig.packages.${system}.master
+              zls.packages.${system}.zls
+            ];
+          LD_LIBRARY_PATH = "${pkgs.lib.makeLibraryPath runtimeLibs}";
+          ZLIB_LIBPATH = "${pkgs.zlib}/lib";
+        };
       };
     };
 }
