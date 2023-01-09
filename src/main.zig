@@ -1,5 +1,6 @@
 const graphics = @import("./gui/graphics.zig");
 const ui = @import("./gui/ui.zig");
+const fs = @import("./fs.zig");
 
 const std = @import("std");
 const zglfw = @import("zglfw");
@@ -12,39 +13,42 @@ pub fn main() !void {
 
     const allocator = gpa.allocator();
 
-    // var arena_state = std.heap.ArenaAllocator.init(allocator);
-    // defer arena_state.deinit();
+    const fs_state = fs.FsState.init(allocator) catch |err| {
+        std.log.err("Failed to initialize FS state: {}", .{err});
+        return;
+    };
+    defer fs_state.deinit();
 
-    // zstbi.init(arena_state.allocator());
     zstbi.init(allocator);
     defer zstbi.deinit();
 
-    zglfw.init() catch {
-        std.log.err("Failed to initialize GLFW library.", .{});
+    zglfw.init() catch |err| {
+        std.log.err("Failed to initialize GLFW library: {}", .{err});
         return;
     };
     defer zglfw.terminate();
 
-    const window = zglfw.Window.create(1600, 1000, ui.window_title, null) catch {
-        std.log.err("Failed to create the window.", .{});
+    const window = zglfw.Window.create(1600, 1000, ui.window_title, null) catch |err| {
+        std.log.err("Failed to create the window: {}", .{err});
         return;
     };
     defer window.destroy();
     window.setSizeLimits(400, 400, -1, -1);
 
-    const graphics_state = graphics.create(allocator, window) catch {
-        std.log.err("Failed to initialize the graphics state.", .{});
+    const graphics_state = graphics.create(allocator, window) catch |err| {
+        std.log.err("Failed to initialize the graphics state: {}", .{err});
         return;
     };
     defer graphics_state.deinit(allocator);
 
-    const ui_state = ui.create(allocator, graphics_state) catch {
-        std.log.err("Failed to initialize the UI state.", .{});
+    const ui_state = ui.create(allocator, graphics_state, fs_state) catch |err| {
+        std.log.err("Failed to initialize the UI state: {}", .{err});
         return;
     };
     defer ui_state.deinit(allocator);
 
     // we should be initialized here
+
     zgui.io.setIniFilename(null);
 
     while (!window.shouldClose() and !ui_state.quit) {

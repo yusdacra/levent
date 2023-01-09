@@ -82,11 +82,6 @@ pub const ImageHandle = struct {
     }
 };
 
-// this function assumes zstbi is initialized.
-pub inline fn decode_image(image_path: [:0]const u8) !zstbi.Image {
-    return try zstbi.Image.init(image_path, 4);
-}
-
 pub fn load_image(gctx: *zgpu.GraphicsContext, image: *const zstbi.Image) ImageHandle {
     // Create a texture.
     const texture = gctx.createTexture(.{

@@ -2,6 +2,7 @@ const graphics = @import("./graphics.zig");
 const img = @import("./image.zig");
 const uitils = @import("./ui/utils.zig");
 const utils = @import("../utils.zig");
+const fs = @import("../fs.zig");
 
 const std = @import("std");
 const zgui = @import("zgui");
@@ -55,22 +56,25 @@ const ImagesState = struct {
     }
 };
 
-fn impl_select_image(buffer: *RingBuffer(Image)) !void {
+fn impl_select_image(buffer: *RingBuffer(Image), fs_state: *const fs.FsState) !void {
     const file_path = try nfd.openFileDialog(null, null);
     if (file_path) |path| {
         defer nfd.freePath(path);
-        var image = try img.decode_image(path);
+        var image = try fs.read_image(path);
         var thumbnail = img.make_thumbnail(&image);
         image.deinit();
+        fs_state.write_thumbnail(&thumbnail) catch |err| {
+            std.log.err("could not write thumbnail: {}", .{err});
+        };
         // trust that we will deinit the image later (hopefully!)
         buffer.produce(thumbnail) catch |err| {
-            std.debug.print("ring buffer err: {}", .{err});
+            std.log.err("ring buffer err: {}", .{err});
             thumbnail.deinit();
         };
     }
 }
 
-fn impl_select_folder(buffer: *RingBuffer(Image), alloc: std.mem.Allocator) !void {
+fn impl_select_folder(buffer: *RingBuffer(Image), alloc: std.mem.Allocator, fs_state: *const fs.FsState) !void {
     const maybe_dir_path = try nfd.openFolderDialog(null);
     if (maybe_dir_path) |dir_path| {
         defer nfd.freePath(dir_path);
@@ -86,16 +90,19 @@ fn impl_select_folder(buffer: *RingBuffer(Image), alloc: std.mem.Allocator) !voi
                     .{ dir_path, entry.path },
                 );
                 defer alloc.destroy(file_path.ptr);
-                print("started loading image on path {s}\n", .{file_path});
-                var image = img.decode_image(file_path) catch |err| {
-                    print("could not decode image: {}\n", .{err});
+                std.log.info("started loading image on path {s}", .{file_path});
+                var image = fs.read_image(file_path) catch |err| {
+                    std.log.err("could not decode image: {}", .{err});
                     continue;
                 };
                 var thumbnail = img.make_thumbnail(&image);
                 image.deinit();
+                fs_state.write_thumbnail(&thumbnail) catch |err| {
+                    std.log.err("could not write thumbnail: {}", .{err});
+                };
                 // trust that we will deinit the image later (hopefully!)
                 buffer.produce(thumbnail) catch |err| {
-                    std.debug.print("ring buffer err: {}", .{err});
+                    std.log.err("ring buffer err: {}", .{err});
                     thumbnail.deinit();
                 };
             }
@@ -107,16 +114,18 @@ pub const UiState = struct {
     images_state: ImagesState,
     quit: bool = false,
     alloc: std.mem.Allocator,
-    gfx: *graphics.GraphicsState,
     image_buffer: *RingBuffer(Image),
+    fs_state: *fs.FsState,
+    gfx: *graphics.GraphicsState,
 
     fn select_image(self: *UiState) void {
         var thread = std.Thread.spawn(
             .{},
             impl_select_image,
-            .{self.image_buffer},
+            .{ self.image_buffer, self.fs_state },
         ) catch |err| {
-            std.debug.panic("cannot spawn thread: {}", .{err});
+            std.log.err("cannot spawn thread: {}", .{err});
+            return;
         };
         thread.detach();
     }
@@ -125,9 +134,10 @@ pub const UiState = struct {
         var thread = std.Thread.spawn(
             .{},
             impl_select_folder,
-            .{ self.image_buffer, self.alloc },
+            .{ self.image_buffer, self.alloc, self.fs_state },
         ) catch |err| {
-            std.debug.panic("cannot spawn thread: {}", .{err});
+            std.log.err("cannot spawn thread: {}", .{err});
+            return;
         };
         thread.detach();
     }
@@ -222,7 +232,7 @@ pub const UiState = struct {
             };
             while (image != null) {
                 self.images_state.load_image(&image.?) catch |err| {
-                    std.debug.print("could not load image: {}", .{err});
+                    std.log.err("could not load image: {}", .{err});
                 };
                 image.?.deinit();
                 image = image: {
@@ -337,7 +347,11 @@ pub const UiState = struct {
     }
 };
 
-pub fn create(allocator: std.mem.Allocator, graphics_state: *graphics.GraphicsState) !*UiState {
+pub fn create(
+    allocator: std.mem.Allocator,
+    graphics_state: *graphics.GraphicsState,
+    fs_state: *fs.FsState,
+) !*UiState {
     var image_buffer = try allocator.create(RingBuffer(Image));
     try image_buffer.init(128, allocator);
 
@@ -352,6 +366,7 @@ pub fn create(allocator: std.mem.Allocator, graphics_state: *graphics.GraphicsSt
         .image_buffer = image_buffer,
         .alloc = allocator,
         .gfx = graphics_state,
+        .fs_state = fs_state,
     };
     return state;
 }
