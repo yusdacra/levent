@@ -1,6 +1,7 @@
 const graphics = @import("./gui/graphics.zig");
 const ui = @import("./gui/ui.zig");
 const fs = @import("./fs.zig");
+const db = @import("./db.zig");
 
 const std = @import("std");
 const zglfw = @import("zglfw");
@@ -45,7 +46,7 @@ pub fn main() !void {
         std.log.err("Failed to initialize the UI state: {}", .{err});
         return;
     };
-    defer ui_state.deinit(allocator);
+    defer ui_state.deinit();
 
     // we should be initialized here
 
@@ -57,4 +58,25 @@ pub fn main() !void {
         ui_state.draw();
         graphics_state.draw();
     }
+
+    // open or create the db file
+    const db_file = std.fs.createFileAbsoluteZ(
+        fs_state.images_db_path,
+        .{
+            .truncate = true,
+            .exclusive = false,
+        },
+    ) catch |err| {
+        std.log.err(
+            "could not create or open db file '{s}': {}",
+            .{ fs_state.images_db_path, err },
+        );
+        return;
+    };
+    defer db_file.close();
+    std.log.info("saving db...", .{});
+    // save db file
+    ui_state.images_state.image_paths.writeToFile(db_file) catch |err| {
+        std.log.err("could not save to db file: {}", .{err});
+    };
 }

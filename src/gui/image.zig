@@ -59,7 +59,6 @@ pub const ImageHandle = struct {
     texture: zgpu.TextureViewHandle,
     width: u32,
     height: u32,
-    id: ImageId,
 
     pub inline fn scaled_size(self: *const ImageHandle, scale: f32) [2]f32 {
         return scale_image_size(scale, self.width, self.height);
@@ -116,7 +115,6 @@ pub fn load_image(gctx: *zgpu.GraphicsContext, image: *const zstbi.Image) ImageH
         .texture = texture_view,
         .width = image.width,
         .height = image.height,
-        .id = id.hash(image.data),
     };
 }
 
@@ -124,12 +122,16 @@ const InternalImageMap = std.AutoHashMap(ImageId, ImageHandle);
 pub const ImageMap = struct {
     map: InternalImageMap,
 
-    pub inline fn add(self: *ImageMap, handle: ImageHandle) !void {
-        try self.map.put(handle.id, handle);
+    pub inline fn add(self: *ImageMap, image_id: ImageId, handle: ImageHandle) !void {
+        try self.map.put(image_id, handle);
     }
 
     pub fn get(self: *const ImageMap, image_id: ImageId) ?ImageHandle {
         return self.map.get(image_id);
+    }
+
+    pub fn has(self: *const ImageMap, image_id: ImageId) bool {
+        return self.map.contains(image_id);
     }
 
     pub fn deinit(self: *ImageMap) void {
