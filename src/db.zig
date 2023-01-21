@@ -91,3 +91,33 @@ pub fn StrStorage(comptime Id: []const u8) type {
         }
     };
 }
+
+pub fn filter_tags(
+    comptime T: type,
+    comptime get_images: fn (*const T) *const Tags,
+    comptime found_fn: fn (*T, img.ImageId) void,
+    t_value: *T,
+    tags: [:0]const u8,
+) void {
+    var separated_tags = std.mem.split(u8, tags, " ");
+
+    var images = get_images(t_value);
+    var key_iter = images.map.keyIterator();
+    while (key_iter.next()) |id| {
+        var img_tags = std.mem.split(u8, images.map.get(id.*).?, " ");
+        const found = found: {
+            while (separated_tags.next()) |tag| {
+                while (img_tags.next()) |otag| {
+                    if (std.mem.startsWith(u8, otag, tag)) {
+                        break :found true;
+                    }
+                }
+            }
+            break :found false;
+        };
+        if (found) {
+            found_fn(t_value, id.*);
+        }
+        separated_tags.reset();
+    }
+}

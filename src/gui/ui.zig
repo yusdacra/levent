@@ -37,11 +37,6 @@ const DecodedImage = struct {
     }
 };
 
-const ImageState = struct {
-    is_open: bool = false,
-};
-const ImageStates = std.AutoArrayHashMap(img.ImageId, ImageState);
-
 const ImagesState = struct {
     image_paths: db.Paths,
     image_tags: db.Tags,
@@ -221,17 +216,25 @@ fn decode_thumbnail(
     };
 }
 
+const ShownImages = std.AutoArrayHashMap(img.ImageId, void);
+const OpenImages = std.AutoArrayHashMap(img.ImageId, void);
+
 pub const UiState = struct {
     images_state: ImagesState,
-    // images we'll show
-    image_states: ImageStates,
+    images_to_show: ShownImages,
+    open_images: OpenImages,
     image_buffer: *RingBuffer(DecodedImage),
     alloc: std.mem.Allocator,
     fs_state: *fs.FsState,
     gfx: *graphics.GraphicsState,
     quit: bool = false,
+    editing_tags_for_image: ?img.ImageId = null,
+    edit_tags_buf: [1024:0]u8 = std.mem.zeroes([1024:0]u8),
+    current_tags: [1024:0]u8 = std.mem.zeroes([1024:0]u8),
 
-    fn select_image(self: *UiState) void {
+    const Self = @This();
+
+    fn select_image(self: *Self) void {
         var thread = std.Thread.spawn(
             .{},
             impl_select_image,
@@ -243,7 +246,7 @@ pub const UiState = struct {
         thread.detach();
     }
 
-    fn select_folder(self: *UiState) void {
+    fn select_folder(self: *Self) void {
         var thread = std.Thread.spawn(
             .{},
             impl_select_folder,
@@ -255,7 +258,7 @@ pub const UiState = struct {
         thread.detach();
     }
 
-    fn add_image(self: *UiState, id: img.ImageId, both_size: u32) bool {
+    fn add_image(self: *Self, id: img.ImageId, both_size: u32) bool {
         var buf = img.id.new_str_buf();
         const id_str = img.id.to_str(id, &buf);
 
@@ -322,7 +325,7 @@ pub const UiState = struct {
         return clicked;
     }
 
-    fn show_image_window(self: *UiState, id: img.ImageId, is_open: *bool) void {
+    fn show_image_window(self: *Self, id: img.ImageId, is_open: *bool) void {
         const maybe_image = self.images_state.get_image(id);
         const viewport_size = zgui.getMainViewport().getWorkSize();
         const metadata_size: f32 = viewport_size[0] * 0.2;
@@ -409,23 +412,47 @@ pub const UiState = struct {
         } else {
             zgui.textUnformatted("tags: <no tags>");
         }
+        if (zgui.button("edit tags", .{})) {
+            self.editing_tags_for_image = id;
+        }
         zgui.endChild();
     }
 
-    fn consume_images(self: *UiState) !void {
+    fn show_edit_tags_popup(self: *Self, id: img.ImageId) !void {
+        const viewport_size = zgui.getMainViewport().getWorkSize();
+        zgui.setNextWindowSize(.{
+            .w = viewport_size[0] * 0.3,
+            .h = viewport_size[1] * 0.01,
+            .cond = .always,
+        });
+        _ = zgui.begin("edit tags", .{});
+        defer zgui.end();
+
+        const submit = zgui.inputText("new tags", .{
+            .buf = self.edit_tags_buf[0..],
+            .flags = .{ .enter_returns_true = true },
+        });
+        if (submit) {
+            const new_tags = try self.alloc.dupeZ(u8, std.mem.sliceTo(&self.edit_tags_buf, 0));
+            try self.images_state.image_tags.add(id, new_tags);
+            self.editing_tags_for_image = null;
+        }
+    }
+
+    fn consume_images(self: *Self) !void {
         var image: ?DecodedImage = try self.image_buffer.consume();
         while (image != null) {
             var decoded = image.?;
             defer decoded.deinit(self.alloc);
             var image_id = try self.images_state.load_image(decoded);
             if (decoded.do_add) {
-                try self.image_states.put(image_id, .{});
+                try self.images_to_show.put(image_id, {});
             }
             image = try self.image_buffer.consume();
         }
     }
 
-    fn load_original_image(self: *const UiState, image_id: img.ImageId) void {
+    fn load_original_image(self: *const Self, image_id: img.ImageId) void {
         const handle = std.Thread.spawn(
             .{},
             decode_image,
@@ -445,7 +472,17 @@ pub const UiState = struct {
         handle.detach();
     }
 
-    pub fn draw(self: *UiState) void {
+    fn get_images_tags(self: *const Self) *const db.Tags {
+        return &self.images_state.image_tags;
+    }
+
+    fn mark_image_as_shown(self: *Self, id: img.ImageId) void {
+        self.images_to_show.put(id, {}) catch |err| {
+            std.log.err("cannot allocate: {}", .{err});
+        };
+    }
+
+    pub fn draw(self: *Self) void {
         // before *everything*, load in images!
         self.consume_images() catch |err| {
             std.log.err("cannot load images: {}", .{err});
@@ -505,7 +542,26 @@ pub const UiState = struct {
         zgui.popItemWidth();
 
         if (do_search) {
-            print("{s}\n", .{&search_buf});
+            self.images_to_show.clearRetainingCapacity();
+            if (search_buf[0] != 0) {
+                db.filter_tags(
+                    Self,
+                    Self.get_images_tags,
+                    Self.mark_image_as_shown,
+                    self,
+                    std.mem.sliceTo(&search_buf, 0),
+                );
+            } else {
+                var keys_iter = self.images_state.image_paths.map.keyIterator();
+                while (keys_iter.next()) |id| {
+                    self.images_to_show.put(id.*, {}) catch unreachable;
+                }
+            }
+            std.mem.copy(u8, &self.current_tags, &search_buf);
+        }
+
+        if (self.current_tags[0] != 0) {
+            zgui.textWrapped("{s}", .{self.current_tags[0.. :0]});
         }
 
         if (zgui.button("quit", .{})) {
@@ -538,16 +594,21 @@ pub const UiState = struct {
         _ = zgui.tableNextColumn();
         // actually add the images
         zgui.sameLine(.{});
-        for (self.image_states.keys()) |image_id| {
-            const state = self.image_states.getPtr(image_id).?;
+        for (self.images_to_show.keys()) |image_id| {
+            var is_open = self.open_images.contains(image_id);
             if (self.add_image(image_id, @floatToInt(u32, width_per_item))) {
-                state.is_open = true;
+                self.open_images.put(image_id, {}) catch |err| {
+                    std.log.err("failed to allocate: {}", .{err});
+                };
                 if (!self.images_state.images.has(image_id)) {
                     self.load_original_image(image_id);
                 }
             }
-            if (state.is_open) {
-                self.show_image_window(image_id, &state.is_open);
+            if (is_open) {
+                self.show_image_window(image_id, &is_open);
+                if (!is_open) {
+                    _ = self.open_images.swapRemove(image_id);
+                }
             }
             if (zgui.getItemRectMax()[0] + width_per_item > max_width) {
                 zgui.newLine();
@@ -557,12 +618,23 @@ pub const UiState = struct {
         zgui.endTable();
         // the images //
         zgui.endTable();
+
+        if (self.editing_tags_for_image) |edit_id| {
+            if (self.images_state.get_tags(edit_id)) |current_tags| {
+                std.mem.copy(u8, &self.edit_tags_buf, current_tags);
+            }
+            self.show_edit_tags_popup(edit_id) catch |err| {
+                std.log.err("cannot show edit tags popup: {}", .{err});
+                self.editing_tags_for_image = null;
+            };
+        }
     }
 
     pub fn deinit(self: *UiState) void {
         self.images_state.deinit();
         self.image_buffer.deinit();
-        self.image_states.deinit();
+        self.images_to_show.deinit();
+        self.open_images.deinit();
         self.alloc.destroy(self.image_buffer);
         self.alloc.destroy(self);
         // gfx is deinitialized in main.zig
@@ -585,19 +657,19 @@ pub fn create(
     var image_tags = try fs_state.read_db_file(db.Tags);
     errdefer image_tags.deinit();
 
-    var image_states = ImageStates.init(allocator);
-    errdefer image_states.deinit();
+    var shown_images = ShownImages.init(allocator);
+    errdefer shown_images.deinit();
 
     // add image ids from image paths for display
     // later on we should only do this if all images are being displayed
     // ensuring the capacity here is a good idea regardless though
     var i: usize = 0;
     var thumbnails_to_load = try allocator.alloc(img.ImageId, image_paths.map.count());
-    try image_states.ensureUnusedCapacity(image_paths.map.count());
+    try shown_images.ensureUnusedCapacity(image_paths.map.count());
     var id_iter = image_paths.map.keyIterator();
     while (id_iter.next()) |id| {
         // cannot fail since we ensure capacity beforehand
-        image_states.put(id.*, .{}) catch unreachable;
+        shown_images.put(id.*, {}) catch unreachable;
         thumbnails_to_load[i] = id.*;
         i += 1;
     }
@@ -619,7 +691,8 @@ pub fn create(
             .alloc = allocator,
             .gfx = graphics_state,
         },
-        .image_states = image_states,
+        .images_to_show = shown_images,
+        .open_images = OpenImages.init(allocator),
         .image_buffer = image_buffer,
         .alloc = allocator,
         .gfx = graphics_state,
