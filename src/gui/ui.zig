@@ -19,12 +19,22 @@ const RingBuffer = ring_buffer.RingBuffer;
 const Image = zstbi.Image;
 
 const DecodedImage = struct {
-    destroy_path: bool,
-    do_add: bool,
     id: ?img.ImageId,
+    do_add: bool,
     image: ?Image,
     thumbnail: ?Image,
     path: [:0]const u8,
+    destroy_path: bool,
+
+    const Self = @This();
+
+    fn deinit(self: *Self, alloc: std.mem.Allocator) void {
+        if (self.image) |*dimage| dimage.deinit();
+        if (self.thumbnail) |*thumbnail| thumbnail.deinit();
+        if (self.destroy_path) {
+            alloc.destroy(self.path.ptr);
+        }
+    }
 };
 
 const ImageState = struct {
@@ -33,7 +43,8 @@ const ImageState = struct {
 const ImageStates = std.AutoArrayHashMap(img.ImageId, ImageState);
 
 const ImagesState = struct {
-    image_paths: db.Images,
+    image_paths: db.Paths,
+    image_tags: db.Tags,
     // loaded images
     images: img.ImageMap,
     thumbnails: img.ImageMap,
@@ -44,9 +55,6 @@ const ImagesState = struct {
         const image_id = decoded.id orelse img.id.hash(decoded.image.?.data);
         if (decoded.do_add) {
             try self.image_paths.add(image_id, decoded.path);
-        }
-        if (decoded.destroy_path) {
-            self.alloc.destroy(decoded.path.ptr);
         }
         if (decoded.thumbnail) |thumbnail| {
             const thumbnail_handle = img.load_image(self.gfx.gctx, &thumbnail);
@@ -62,6 +70,10 @@ const ImagesState = struct {
         return self.image_paths.map.get(id);
     }
 
+    inline fn get_tags(self: *ImagesState, id: img.ImageId) ?[:0]const u8 {
+        return self.image_tags.map.get(id);
+    }
+
     inline fn get_image(self: *ImagesState, id: img.ImageId) ?img.ImageHandle {
         return self.images.get(id);
     }
@@ -72,6 +84,7 @@ const ImagesState = struct {
 
     fn deinit(self: *ImagesState) void {
         self.image_paths.deinit();
+        self.image_tags.deinit();
         self.images.deinit();
         self.thumbnails.deinit();
         // gfx is deinit in main.zig so it's fine
@@ -118,6 +131,7 @@ fn impl_select_folder(
     }
 }
 
+// ids_to_load will be freed by this function.
 fn impl_load_thumbnails(
     buffer: *RingBuffer(DecodedImage),
     alloc: std.mem.Allocator,
@@ -142,7 +156,7 @@ fn decode_image(
     std.log.debug("started decoding image on path {s}", .{file_path});
     var image = fs.read_image(file_path) catch |err| {
         std.log.err("could not decode image: {}", .{err});
-        if (!do_add and destroy_path) alloc.destroy(file_path.ptr);
+        if (do_add) alloc.free(file_path);
         return;
     };
     var thumbnail = thumb: {
@@ -156,19 +170,19 @@ fn decode_image(
             break :thumb null;
         }
     };
-    // trust that we will deinit the image later (hopefully!)
-    buffer.produce(.{
+    const decoded = .{
         .destroy_path = destroy_path,
         .do_add = do_add,
         .thumbnail = thumbnail,
         .image = image,
         .path = file_path,
         .id = null,
-    }) catch |err| {
+    };
+    buffer.produce(decoded) catch |err| {
         std.log.err("ring buffer err: {}", .{err});
         if (thumbnail) |*thumb| thumb.deinit();
         image.deinit();
-        if (!do_add and destroy_path) alloc.destroy(file_path.ptr);
+        if (do_add) alloc.free(file_path);
     };
 }
 
@@ -189,21 +203,21 @@ fn decode_thumbnail(
     std.log.debug("started decoding image on path {s}", .{file_path});
     var thumbnail = fs.read_image(file_path) catch |err| {
         std.log.err("could not decode thumbnail image: {}", .{err});
-        alloc.destroy(file_path.ptr);
+        alloc.free(file_path);
         return;
     };
-    // trust that we will deinit the image later (hopefully!)
-    buffer.produce(.{
+    const decoded = .{
         .destroy_path = true,
         .do_add = false,
         .thumbnail = thumbnail,
         .image = null,
         .path = file_path,
         .id = id,
-    }) catch |err| {
+    };
+    buffer.produce(decoded) catch |err| {
         std.log.err("ring buffer err: {}", .{err});
         thumbnail.deinit();
-        alloc.destroy(file_path.ptr);
+        alloc.free(file_path);
     };
 }
 
@@ -247,87 +261,98 @@ pub const UiState = struct {
 
         const maybe_image = self.images_state.get_thumbnail(id);
 
-        if (maybe_image) |image| {
-            const tex_id = self.gfx.gctx.lookupResource(image.texture).?;
-            const is_wide = image.width > image.height;
-            const size = size: {
-                if (is_wide) {
-                    break :size image.fit_to_width_size(both_size);
-                } else {
-                    break :size image.fit_to_height_size(both_size);
-                }
-            };
-            const padding = pad: {
-                if (is_wide) {
-                    break :pad [_]f32{
-                        0.0,
-                        (@intToFloat(f32, both_size) - size[1]) / 2.0,
-                    };
-                } else {
-                    break :pad [_]f32{
-                        (@intToFloat(f32, both_size) - size[0]) / 2.0,
-                        0.0,
-                    };
-                }
-            };
+        const clicked = click: {
+            if (maybe_image) |image| {
+                const tex_id = self.gfx.gctx.lookupResource(image.texture).?;
+                const is_wide = image.width > image.height;
+                const size = size: {
+                    if (is_wide) {
+                        break :size image.fit_to_width_size(both_size);
+                    } else {
+                        break :size image.fit_to_height_size(both_size);
+                    }
+                };
+                const padding = pad: {
+                    if (is_wide) {
+                        break :pad [_]f32{
+                            0.0,
+                            (@intToFloat(f32, both_size) - size[1]) / 2.0,
+                        };
+                    } else {
+                        break :pad [_]f32{
+                            (@intToFloat(f32, both_size) - size[0]) / 2.0,
+                            0.0,
+                        };
+                    }
+                };
 
-            uitils.pushStyleVar(.frame_padding, .{ padding[0], padding[1] });
-            const clicked = zgui.imageButton(
-                id_str,
-                tex_id,
-                .{ .w = size[0], .h = size[1] },
-            );
-            uitils.popStyleVars(1);
-            return clicked;
-        } else {
-            const bs = @intToFloat(f32, both_size);
-            _ = zgui.button(
-                "###image_button_no_img",
-                .{ .w = bs, .h = bs },
-            );
-            return false;
+                uitils.pushStyleVar(.frame_padding, .{ padding[0], padding[1] });
+                const clicked = zgui.imageButton(
+                    id_str,
+                    tex_id,
+                    .{ .w = size[0], .h = size[1] },
+                );
+                uitils.popStyleVars(1);
+                break :click clicked;
+            } else {
+                const bs = @intToFloat(f32, both_size);
+                _ = zgui.button(
+                    "###image_button_no_img",
+                    .{ .w = bs, .h = bs },
+                );
+                break :click false;
+            }
+        };
+
+        if (self.images_state.get_path(id)) |path| {
+            if (zgui.isItemHovered(.{})) {
+                _ = zgui.beginTooltip();
+                zgui.textUnformatted(std.fs.path.basename(path));
+                if (self.images_state.get_tags(id)) |tags| {
+                    if (tags.len > 30) {
+                        zgui.text("{s}...", .{tags[0..30]});
+                    } else {
+                        zgui.textUnformatted(tags);
+                    }
+                }
+                zgui.endTooltip();
+            }
         }
 
-        const hovered_flags = utils.merge_packed_structs(
-            u32,
-            zgui.HoveredFlags.root_and_child_windows,
-            zgui.HoveredFlags.rect_only,
-        );
-        if (zgui.isItemHovered(hovered_flags)) {
-            _ = zgui.beginTooltip();
-            zgui.text("{s}", .{id_str});
-            zgui.endTooltip();
-        }
+        return clicked;
     }
 
     fn show_image_window(self: *UiState, id: img.ImageId, is_open: *bool) void {
         const maybe_image = self.images_state.get_image(id);
+        const viewport_size = zgui.getMainViewport().getWorkSize();
+        const metadata_size: f32 = viewport_size[0] * 0.2;
 
         if (maybe_image) |image| {
             // set initial window size
-            const viewport_size = zgui.getMainViewport().getWorkSize();
             const initial_window_size = size: {
-                const style = zgui.getStyle();
                 if (image.width > image.height) {
-                    if (image.width > @floatToInt(u32, viewport_size[0])) {
+                    const viewport_x = viewport_size[0] * 0.7;
+                    if (image.width > @floatToInt(u32, viewport_x)) {
                         break :size image.fit_to_width_size(@floatToInt(
                             u32,
-                            viewport_size[0] - style.window_padding[0] * 2,
+                            viewport_x,
                         ));
                     }
                 } else {
-                    if (image.height > @floatToInt(u32, viewport_size[1])) {
+                    const viewport_y = viewport_size[1] * 0.7;
+                    if (image.height > @floatToInt(u32, viewport_y)) {
                         break :size image.fit_to_height_size(@floatToInt(
                             u32,
-                            viewport_size[1] - style.window_padding[1] * 2,
+                            viewport_y,
                         ));
                     }
                 }
                 break :size [_]f32{ image.widthf(), image.heightf() };
             };
+            const style = zgui.getStyle();
             zgui.setNextWindowSize(.{
-                .w = initial_window_size[0],
-                .h = initial_window_size[1],
+                .w = initial_window_size[0] + metadata_size,
+                .h = initial_window_size[1] + style.window_padding[1] * 5,
                 .cond = .once,
             });
         }
@@ -341,29 +366,49 @@ pub const UiState = struct {
 
         if (maybe_image) |image| {
             // the image
-            const size = image.fit_to_width_size(@floatToInt(u32, zgui.getWindowSize()[0]) - 120);
+            const size = image.fit_to_width_size(
+                @floatToInt(u32, zgui.getWindowSize()[0] - metadata_size),
+            );
             const tex_id = self.gfx.gctx.lookupResource(image.texture).?;
             _ = zgui.beginChild("image", .{ .w = size[0], .h = size[1] });
             zgui.image(tex_id, .{ .w = size[0], .h = size[1] });
             zgui.endChild();
+            // image and metadata or on the "same line"
+            zgui.sameLine(.{});
         } else {
-            _ = zgui.beginChild("image", .{});
-            zgui.text("loading...", .{});
-            zgui.endChild();
+            zgui.textUnformatted("loading...");
         }
-
-        // image and metadata or on the "same line"
-        zgui.sameLine(.{});
 
         // the metadata
         _ = zgui.beginChild("image_metadata", .{});
+        const path = self.images_state.get_path(id).?;
+        const tags = self.images_state.get_tags(id);
+        if (zgui.beginPopupContextWindow()) {
+            if (zgui.menuItem("copy path", .{})) {
+                zgui.setClipboardText(path);
+            }
+            if (tags) |tags_str| {
+                if (zgui.menuItem("copy tags", .{})) {
+                    zgui.setClipboardText(tags_str);
+                }
+            }
+            zgui.endPopup();
+        }
         zgui.text("Metadata", .{});
         if (maybe_image) |image| {
             zgui.text("width: {d}", .{image.width});
             zgui.text("height: {d}", .{image.height});
+        } else {
+            zgui.textUnformatted("width: loading");
+            zgui.textUnformatted("height: loading");
         }
-        zgui.text("path: {s}", .{self.images_state.get_path(id).?});
-        zgui.text("hash: {s}", .{std.fmt.fmtSliceHexLower(&@bitCast([16]u8, id))});
+        zgui.textWrapped("path: {s}", .{path});
+        zgui.textWrapped("hash: {s}", .{std.fmt.fmtSliceHexLower(&@bitCast([16]u8, id))});
+        if (tags) |tags_str| {
+            zgui.textWrapped("tags: {s}", .{tags_str});
+        } else {
+            zgui.textUnformatted("tags: <no tags>");
+        }
         zgui.endChild();
     }
 
@@ -371,14 +416,33 @@ pub const UiState = struct {
         var image: ?DecodedImage = try self.image_buffer.consume();
         while (image != null) {
             var decoded = image.?;
+            defer decoded.deinit(self.alloc);
             var image_id = try self.images_state.load_image(decoded);
             if (decoded.do_add) {
                 try self.image_states.put(image_id, .{});
             }
-            if (decoded.image) |*dimage| dimage.deinit();
-            if (decoded.thumbnail) |*thumbnail| thumbnail.deinit();
             image = try self.image_buffer.consume();
         }
+    }
+
+    fn load_original_image(self: *const UiState, image_id: img.ImageId) void {
+        const handle = std.Thread.spawn(
+            .{},
+            decode_image,
+            .{
+                self.image_buffer,
+                self.alloc,
+                self.fs_state,
+                self.images_state.get_path(image_id).?,
+                false,
+                false,
+                false,
+            },
+        ) catch |err| {
+            std.log.err("cannot spawn thread: {}", .{err});
+            return;
+        };
+        handle.detach();
     }
 
     pub fn draw(self: *UiState) void {
@@ -427,10 +491,22 @@ pub const UiState = struct {
         });
 
         _ = zgui.tableNextColumn();
+
         zgui.pushItemWidth(150.0);
         var search_buf = std.mem.zeroes([1024:0]u8);
-        _ = zgui.inputTextWithHint("###search", .{ .hint = "enter tags to search", .buf = search_buf[0..] });
+        const do_search = zgui.inputTextWithHint(
+            "###search",
+            .{
+                .hint = "enter tags to search",
+                .buf = search_buf[0..],
+                .flags = .{ .enter_returns_true = true },
+            },
+        );
         zgui.popItemWidth();
+
+        if (do_search) {
+            print("{s}\n", .{&search_buf});
+        }
 
         if (zgui.button("quit", .{})) {
             self.quit = true;
@@ -467,25 +543,7 @@ pub const UiState = struct {
             if (self.add_image(image_id, @floatToInt(u32, width_per_item))) {
                 state.is_open = true;
                 if (!self.images_state.images.has(image_id)) {
-                    const thread = thread: {
-                        break :thread std.Thread.spawn(
-                            .{},
-                            decode_image,
-                            .{
-                                self.image_buffer,
-                                self.alloc,
-                                self.fs_state,
-                                self.images_state.get_path(image_id).?,
-                                false,
-                                false,
-                                false,
-                            },
-                        ) catch |err| {
-                            std.log.err("cannot spawn thread: {}", .{err});
-                            break :thread null;
-                        };
-                    };
-                    if (thread) |handle| handle.detach();
+                    self.load_original_image(image_id);
                 }
             }
             if (state.is_open) {
@@ -508,6 +566,7 @@ pub const UiState = struct {
         self.alloc.destroy(self.image_buffer);
         self.alloc.destroy(self);
         // gfx is deinitialized in main.zig
+        // fs state is deinitalized in main.zig
     }
 };
 
@@ -520,37 +579,18 @@ pub fn create(
     try image_buffer.init(1024, allocator);
     errdefer image_buffer.deinit();
 
-    var image_paths: db.Images = images: {
-        var maybe_db_file: ?std.fs.File = db: {
-            break :db std.fs.openFileAbsoluteZ(fs_state.images_db_path, .{}) catch |err| {
-                if (err == std.fs.File.OpenError.FileNotFound) {
-                    std.log.warn("no db file found", .{});
-                } else {
-                    std.log.err("could not open db file: {}", .{err});
-                }
-                break :db null;
-            };
-        };
-        if (maybe_db_file) |file| {
-            defer file.close();
-            std.log.info("reading db file from '{s}'", .{fs_state.images_db_path});
-            const metadata = try file.metadata();
-            const data = try file.readToEndAlloc(allocator, @intCast(usize, metadata.size()));
-            defer allocator.destroy(data.ptr);
-            break :images try db.Images.from_data(data, allocator);
-        } else {
-            std.log.info("creating a new db", .{});
-            break :images db.Images.init(allocator);
-        }
-    };
+    var image_paths = try fs_state.read_db_file(db.Paths);
     errdefer image_paths.deinit();
+
+    var image_tags = try fs_state.read_db_file(db.Tags);
+    errdefer image_tags.deinit();
+
+    var image_states = ImageStates.init(allocator);
+    errdefer image_states.deinit();
 
     // add image ids from image paths for display
     // later on we should only do this if all images are being displayed
     // ensuring the capacity here is a good idea regardless though
-    var image_states = ImageStates.init(allocator);
-    errdefer image_states.deinit();
-
     var i: usize = 0;
     var thumbnails_to_load = try allocator.alloc(img.ImageId, image_paths.map.count());
     try image_states.ensureUnusedCapacity(image_paths.map.count());
@@ -573,6 +613,7 @@ pub fn create(
     state.* = .{
         .images_state = .{
             .image_paths = image_paths,
+            .image_tags = image_tags,
             .images = img.create_image_map(allocator),
             .thumbnails = img.create_image_map(allocator),
             .alloc = allocator,

@@ -3,12 +3,18 @@ const ui = @import("./gui/ui.zig");
 const fs = @import("./fs.zig");
 const db = @import("./db.zig");
 
+const builtin = @import("builtin");
 const std = @import("std");
 const zglfw = @import("zglfw");
 const zgui = @import("zgui");
 const zstbi = @import("zstbi");
 
-pub fn main() !void {
+pub const log_level: std.log.Level = switch (builtin.mode) {
+    .Debug => .debug,
+    .ReleaseSafe, .ReleaseFast, .ReleaseSmall => .info,
+};
+
+pub fn main() void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
 
@@ -59,24 +65,6 @@ pub fn main() !void {
         graphics_state.draw();
     }
 
-    // open or create the db file
-    const db_file = std.fs.createFileAbsoluteZ(
-        fs_state.images_db_path,
-        .{
-            .truncate = true,
-            .exclusive = false,
-        },
-    ) catch |err| {
-        std.log.err(
-            "could not create or open db file '{s}': {}",
-            .{ fs_state.images_db_path, err },
-        );
-        return;
-    };
-    defer db_file.close();
-    std.log.info("saving db...", .{});
-    // save db file
-    ui_state.images_state.image_paths.writeToFile(db_file) catch |err| {
-        std.log.err("could not save to db file: {}", .{err});
-    };
+    fs_state.write_db_file(db.Paths, &ui_state.images_state.image_paths);
+    fs_state.write_db_file(db.Tags, &ui_state.images_state.image_tags);
 }
