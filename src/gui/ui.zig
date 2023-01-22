@@ -217,7 +217,10 @@ fn decode_thumbnail(
 }
 
 const ShownImages = std.AutoArrayHashMap(img.ImageId, void);
-const OpenImages = std.AutoArrayHashMap(img.ImageId, void);
+const OpenImageState = struct {
+    edit_tags_buf: [1024:0]u8 = std.mem.zeroes([1024:0]u8),
+};
+const OpenImages = std.AutoArrayHashMap(img.ImageId, OpenImageState);
 
 pub const UiState = struct {
     images_state: ImagesState,
@@ -228,8 +231,6 @@ pub const UiState = struct {
     fs_state: *fs.FsState,
     gfx: *graphics.GraphicsState,
     quit: bool = false,
-    editing_tags_for_image: ?img.ImageId = null,
-    edit_tags_buf: [1024:0]u8 = std.mem.zeroes([1024:0]u8),
     current_tags: [1024:0]u8 = std.mem.zeroes([1024:0]u8),
 
     const Self = @This();
@@ -325,7 +326,7 @@ pub const UiState = struct {
         return clicked;
     }
 
-    fn show_image_window(self: *Self, id: img.ImageId, is_open: *bool) void {
+    fn show_image_window(self: *Self, id: img.ImageId, is_open: *bool, edit_tags_buf: [:0]u8) void {
         const maybe_image = self.images_state.get_image(id);
         const viewport_size = zgui.getMainViewport().getWorkSize();
         const metadata_size: f32 = viewport_size[0] * 0.2;
@@ -407,36 +408,17 @@ pub const UiState = struct {
         }
         zgui.textWrapped("path: {s}", .{path});
         zgui.textWrapped("hash: {s}", .{std.fmt.fmtSliceHexLower(&@bitCast([16]u8, id))});
-        if (tags) |tags_str| {
-            zgui.textWrapped("tags: {s}", .{tags_str});
-        } else {
-            zgui.textUnformatted("tags: <no tags>");
-        }
-        if (zgui.button("edit tags", .{})) {
-            self.editing_tags_for_image = id;
+        zgui.textUnformatted("tags");
+        zgui.sameLine(.{});
+        const submit = zgui.inputTextWithHint(
+            "###edit_tags",
+            .{ .hint = "no tags", .buf = edit_tags_buf },
+        );
+        if (submit) {
+            const new_tags = self.alloc.dupeZ(u8, std.mem.sliceTo(edit_tags_buf, 0)) catch unreachable;
+            self.images_state.image_tags.add(id, new_tags) catch unreachable;
         }
         zgui.endChild();
-    }
-
-    fn show_edit_tags_popup(self: *Self, id: img.ImageId) !void {
-        const viewport_size = zgui.getMainViewport().getWorkSize();
-        zgui.setNextWindowSize(.{
-            .w = viewport_size[0] * 0.3,
-            .h = viewport_size[1] * 0.01,
-            .cond = .always,
-        });
-        _ = zgui.begin("edit tags", .{});
-        defer zgui.end();
-
-        const submit = zgui.inputText("new tags", .{
-            .buf = self.edit_tags_buf[0..],
-            .flags = .{ .enter_returns_true = true },
-        });
-        if (submit) {
-            const new_tags = try self.alloc.dupeZ(u8, std.mem.sliceTo(&self.edit_tags_buf, 0));
-            try self.images_state.image_tags.add(id, new_tags);
-            self.editing_tags_for_image = null;
-        }
     }
 
     fn consume_images(self: *Self) !void {
@@ -595,9 +577,17 @@ pub const UiState = struct {
         // actually add the images
         zgui.sameLine(.{});
         for (self.images_to_show.keys()) |image_id| {
-            var is_open = self.open_images.contains(image_id);
+            var maybe_open_state = self.open_images.get(image_id);
+            var is_open = maybe_open_state != null;
             if (self.add_image(image_id, @floatToInt(u32, width_per_item))) {
-                self.open_images.put(image_id, {}) catch |err| {
+                var new_edit_tags_buf = std.mem.zeroes([1024:0]u8);
+                if (self.images_state.get_tags(image_id)) |current_tags| {
+                    std.mem.copy(u8, &new_edit_tags_buf, current_tags);
+                }
+                self.open_images.put(
+                    image_id,
+                    .{ .edit_tags_buf = new_edit_tags_buf },
+                ) catch |err| {
                     std.log.err("failed to allocate: {}", .{err});
                 };
                 if (!self.images_state.images.has(image_id)) {
@@ -605,7 +595,11 @@ pub const UiState = struct {
                 }
             }
             if (is_open) {
-                self.show_image_window(image_id, &is_open);
+                self.show_image_window(
+                    image_id,
+                    &is_open,
+                    &maybe_open_state.?.edit_tags_buf,
+                );
                 if (!is_open) {
                     _ = self.open_images.swapRemove(image_id);
                 }
@@ -618,16 +612,6 @@ pub const UiState = struct {
         zgui.endTable();
         // the images //
         zgui.endTable();
-
-        if (self.editing_tags_for_image) |edit_id| {
-            if (self.images_state.get_tags(edit_id)) |current_tags| {
-                std.mem.copy(u8, &self.edit_tags_buf, current_tags);
-            }
-            self.show_edit_tags_popup(edit_id) catch |err| {
-                std.log.err("cannot show edit tags popup: {}", .{err});
-                self.editing_tags_for_image = null;
-            };
-        }
     }
 
     pub fn deinit(self: *UiState) void {
