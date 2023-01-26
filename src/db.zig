@@ -67,10 +67,9 @@ pub fn StrStorage(comptime Id: []const u8) type {
 
         pub fn add(self: *Self, image_id: Self.Key, str: Self.Value) !void {
             var result = try self.map.getOrPut(image_id);
-            if (result.found_existing) {
-                // destroy old path
+            // destroy old path
+            if (result.found_existing)
                 self.alloc.free(result.value_ptr.*);
-            }
             result.value_ptr.* = str;
         }
 
@@ -84,9 +83,7 @@ pub fn StrStorage(comptime Id: []const u8) type {
 
         pub fn deinit(self: *Self) void {
             var value_iter = self.map.valueIterator();
-            while (value_iter.next()) |path| {
-                self.alloc.free(path.*);
-            }
+            while (value_iter.next()) |path| self.alloc.free(path.*);
             self.map.deinit();
         }
     };
@@ -108,16 +105,13 @@ pub fn filter_tags(
         const found = found: {
             while (separated_tags.next()) |tag| {
                 while (img_tags.next()) |otag| {
-                    if (std.mem.startsWith(u8, otag, tag)) {
+                    if (std.mem.startsWith(u8, otag, tag))
                         break :found true;
-                    }
                 }
             }
             break :found false;
         };
-        if (found) {
-            found_fn(t_value, id.*);
-        }
+        if (found) found_fn(t_value, id.*);
         separated_tags.reset();
     }
 }
