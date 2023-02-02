@@ -1,4 +1,4 @@
-`levent` is a WIP booru-style media tagger.
+`levent` is a WIP media tagger.
 
 ### Whats working
 
