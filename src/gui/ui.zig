@@ -107,7 +107,7 @@ fn impl_select_folder(
     const maybe_dir_path = try nfd.openFolderDialog(null);
     if (maybe_dir_path) |dir_path| {
         defer nfd.freePath(dir_path);
-        var dir = try std.fs.openDirAbsoluteZ(dir_path, .{});
+        var dir = try std.fs.openDirAbsoluteZ(dir_path, .{ .iterate = true });
         var walker = try dir.walk(alloc);
         defer walker.deinit();
 
