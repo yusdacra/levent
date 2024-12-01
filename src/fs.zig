@@ -7,10 +7,14 @@ const FindDirError = error{NotFound};
 
 // it is up to the caller to destroy the resulting pointer
 fn find_cache_dir(alloc: std.mem.Allocator) ![]const u8 {
-    if (std.os.getenv("XDG_CACHE_HOME")) |cache_dir| {
+    var envmap = try std.process.getEnvMap(alloc);
+    defer envmap.deinit();
+    if (envmap.get("XDG_CACHE_HOME")) |cache_dir| {
         return try std.fmt.allocPrint(alloc, "{s}/levent", .{cache_dir});
-    } else if (std.os.getenv("HOME")) |home_dir| {
+    } else if (envmap.get("HOME")) |home_dir| {
         return try std.fmt.allocPrint(alloc, "{s}/.cache/levent", .{home_dir});
+    } else if (envmap.get("APPDATA")) |cache_dir| {
+        return try std.fmt.allocPrint(alloc, "{s}/levent", .{cache_dir});
     } else {
         std.log.err("no cache dir found", .{});
         return FindDirError.NotFound;
@@ -24,7 +28,7 @@ fn find_data_dir(alloc: std.mem.Allocator) ![]const u8 {
 
 // this function assumes zstbi is initialized.
 pub inline fn read_image(image_path: [:0]const u8) !zstbi.Image {
-    return try zstbi.Image.init(image_path, 4);
+    return try zstbi.Image.loadFromFile(image_path, 4);
 }
 
 pub const FsState = struct {
@@ -36,12 +40,13 @@ pub const FsState = struct {
 
     pub fn init(alloc: std.mem.Allocator) !*FsState {
         const state = try alloc.create(FsState);
+        errdefer alloc.destroy(state);
 
         const cache_dir = try find_cache_dir(alloc);
         errdefer alloc.free(cache_dir);
         std.log.info("using cache directory: {s}", .{cache_dir});
         std.fs.makeDirAbsolute(cache_dir) catch |err| {
-            if (err != std.os.MakeDirError.PathAlreadyExists) {
+            if (err != std.fs.Dir.MakeError.PathAlreadyExists) {
                 std.log.err("could not create cache directory", .{});
                 return err;
             } else {
@@ -53,7 +58,7 @@ pub const FsState = struct {
         errdefer alloc.free(data_dir);
         std.log.info("using data directory: {s}", .{data_dir});
         std.fs.makeDirAbsolute(data_dir) catch |err| {
-            if (err != std.os.MakeDirError.PathAlreadyExists) {
+            if (err != std.fs.Dir.MakeError.PathAlreadyExists) {
                 std.log.err("could not create data directory", .{});
                 return err;
             } else {
@@ -112,7 +117,7 @@ pub const FsState = struct {
     pub fn read_db_file(self: *const FsState, comptime DbType: type) !DbType {
         const db_path = self.get_db_filepath(DbType);
 
-        var maybe_db_file: ?std.fs.File = db: {
+        const maybe_db_file: ?std.fs.File = db: {
             break :db std.fs.openFileAbsoluteZ(db_path, .{}) catch |err| {
                 if (err == std.fs.File.OpenError.FileNotFound) {
                     std.log.warn("no db file found at {s}", .{db_path});
@@ -127,7 +132,7 @@ pub const FsState = struct {
             defer file.close();
             std.log.info("reading db file from '{s}'", .{db_path});
             const metadata = try file.metadata();
-            const data = try file.readToEndAlloc(self.alloc, @intCast(usize, metadata.size()));
+            const data = try file.readToEndAlloc(self.alloc, @intCast(metadata.size()));
             defer self.alloc.free(data);
             return try DbType.from_data(data, self.alloc);
         } else {

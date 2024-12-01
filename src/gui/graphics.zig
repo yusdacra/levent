@@ -47,21 +47,31 @@ pub const GraphicsState = struct {
 };
 
 pub fn create(allocator: std.mem.Allocator, window: *zglfw.Window) !*GraphicsState {
-    const gctx = try zgpu.GraphicsContext.create(allocator, window);
+    const gctx = try zgpu.GraphicsContext.create(
+        allocator,
+        .{
+            .window = window,
+            .fn_getTime = @ptrCast(&zglfw.getTime),
+            .fn_getFramebufferSize = @ptrCast(&zglfw.Window.getFramebufferSize),
+            .fn_getWin32Window = @ptrCast(&zglfw.getWin32Window),
+            .fn_getX11Display = @ptrCast(&zglfw.getX11Display),
+            .fn_getX11Window = @ptrCast(&zglfw.getX11Window),
+            .fn_getWaylandDisplay = @ptrCast(&zglfw.getWaylandDisplay),
+            .fn_getWaylandSurface = @ptrCast(&zglfw.getWaylandWindow),
+            .fn_getCocoaWindow = @ptrCast(&zglfw.getCocoaWindow),
+        },
+        .{},
+    );
+    errdefer gctx.destroy(allocator);
 
     zgui.init(allocator);
     const scale_factor = scale_factor: {
         const scale = window.getContentScale();
-        break :scale_factor std.math.max(scale[0], scale[1]);
+        break :scale_factor if (scale[0] > scale[1]) scale[0] else scale[1];
     };
 
     // This needs to be called *after* adding your custom fonts.
-    zgui.backend.initWithConfig(
-        window,
-        gctx.device,
-        @enumToInt(zgpu.GraphicsContext.swapchain_format),
-        .{ .texture_filter_mode = .linear, .pipeline_multisample_count = 1 },
-    );
+    zgui.backend.init(window, gctx.device, @intFromEnum(zgpu.GraphicsContext.swapchain_format), @intFromEnum(zgpu.wgpu.TextureFormat.undef));
 
     // You can directly manipulate zgui.Style *before* `newFrame()` call.
     // Once frame is started (after `newFrame()` call) you have to use

@@ -1,9 +1,0 @@
-[submodule "libs/zig-gamedev"]
-	path = libs/zig-gamedev
-	url = https://github.com/michal-z/zig-gamedev.git
-[submodule "libs/nfd-zig"]
-	path = libs/nfd-zig
-	url = https://github.com/fabioarnold/nfd-zig.git
-[submodule "libs/zig-ring-buffer"]
-	path = libs/zig-ring-buffer
-	url = https://github.com/Sup3Legacy/zig-ring-buffer.git

@@ -27,8 +27,8 @@ pub fn scale_image_size(scale: f32, width: u32, height: u32) [2]f32 {
     assert(width != 0);
     assert(height != 0);
 
-    const w = @intToFloat(f32, width);
-    const h = @intToFloat(f32, height);
+    const w: f32 = @floatFromInt(width);
+    const h: f32 = @floatFromInt(height);
 
     const ratio = w / h;
     const new_width = w * scale;
@@ -40,17 +40,17 @@ pub fn scale_image_size(scale: f32, width: u32, height: u32) [2]f32 {
 pub fn make_thumbnail(image: *const zstbi.Image) zstbi.Image {
     const max_size = 200;
     const scale = if (image.width > image.height)
-        (@intToFloat(f32, max_size) / @intToFloat(f32, image.width))
+        @as(f32, @floatFromInt(max_size)) / @as(f32, @floatFromInt(image.width))
     else
-        (@intToFloat(f32, max_size) / @intToFloat(f32, image.height));
+        @as(f32, @floatFromInt(max_size)) / @as(f32, @floatFromInt(image.height));
     const size = scale_image_size(
         scale,
         image.width,
         image.height,
     );
     const thumb = image.resize(
-        @floatToInt(u32, size[0]),
-        @floatToInt(u32, size[1]),
+        @intFromFloat(size[0]),
+        @intFromFloat(size[1]),
     );
     return thumb;
 }
@@ -65,19 +65,19 @@ pub const ImageHandle = struct {
     }
 
     pub inline fn fit_to_width_size(self: *const ImageHandle, width: u32) [2]f32 {
-        return self.scaled_size(@intToFloat(f32, width) / self.widthf());
+        return self.scaled_size(@as(f32, @floatFromInt(width)) / self.widthf());
     }
 
     pub inline fn fit_to_height_size(self: *const ImageHandle, height: u32) [2]f32 {
-        return self.scaled_size(@intToFloat(f32, height) / self.heightf());
+        return self.scaled_size(@as(f32, @floatFromInt(height)) / self.heightf());
     }
 
     pub inline fn widthf(self: *const ImageHandle) f32 {
-        return @intToFloat(f32, self.width);
+        return @floatFromInt(self.width);
     }
 
     pub inline fn heightf(self: *const ImageHandle) f32 {
-        return @intToFloat(f32, self.height);
+        return @floatFromInt(self.height);
     }
 };
 

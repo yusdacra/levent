@@ -9,13 +9,12 @@ const std = @import("std");
 const zgui = @import("zgui");
 const zstbi = @import("zstbi");
 const nfd = @import("nfd");
-const ring_buffer = @import("zig-ring-buffer");
 
 const print = std.debug.print;
 
 pub const window_title = "levent";
 
-const RingBuffer = ring_buffer.RingBuffer;
+const DecodedImages = std.fifo.LinearFifo(DecodedImage, .Dynamic);
 const Image = zstbi.Image;
 
 const DecodedImage = struct {
@@ -32,7 +31,7 @@ const DecodedImage = struct {
         if (self.image) |*dimage| dimage.deinit();
         if (self.thumbnail) |*thumbnail| thumbnail.deinit();
         if (self.destroy_path) {
-            alloc.destroy(self.path.ptr);
+            alloc.free(self.path);
         }
     }
 };
@@ -87,7 +86,7 @@ const ImagesState = struct {
 };
 
 fn impl_select_image(
-    buffer: *RingBuffer(DecodedImage),
+    buffer: *DecodedImages,
     alloc: std.mem.Allocator,
     fs_state: *const fs.FsState,
 ) !void {
@@ -101,19 +100,19 @@ fn impl_select_image(
 }
 
 fn impl_select_folder(
-    buffer: *RingBuffer(DecodedImage),
+    buffer: *DecodedImages,
     alloc: std.mem.Allocator,
     fs_state: *const fs.FsState,
 ) !void {
     const maybe_dir_path = try nfd.openFolderDialog(null);
     if (maybe_dir_path) |dir_path| {
         defer nfd.freePath(dir_path);
-        var dir = try std.fs.openIterableDirAbsoluteZ(dir_path, .{});
+        var dir = try std.fs.openDirAbsoluteZ(dir_path, .{});
         var walker = try dir.walk(alloc);
         defer walker.deinit();
 
         while (try walker.next()) |entry| {
-            if (entry.kind == .File) {
+            if (entry.kind == .file) {
                 // this will be put in Images and will be destroyed with it
                 const file_path = try std.fmt.allocPrintZ(
                     alloc,
@@ -128,7 +127,7 @@ fn impl_select_folder(
 
 // ids_to_load will be freed by this function.
 fn impl_load_thumbnails(
-    buffer: *RingBuffer(DecodedImage),
+    buffer: *DecodedImages,
     alloc: std.mem.Allocator,
     fs_state: *const fs.FsState,
     ids_to_load: []const img.ImageId,
@@ -140,7 +139,7 @@ fn impl_load_thumbnails(
 }
 
 fn decode_image(
-    buffer: *RingBuffer(DecodedImage),
+    buffer: *DecodedImages,
     alloc: std.mem.Allocator,
     fs_state: *const fs.FsState,
     file_path: [:0]const u8,
@@ -165,7 +164,7 @@ fn decode_image(
             break :thumb null;
         }
     };
-    const decoded = .{
+    const decoded: DecodedImage = .{
         .destroy_path = destroy_path,
         .do_add = do_add,
         .thumbnail = thumbnail,
@@ -173,7 +172,7 @@ fn decode_image(
         .path = file_path,
         .id = null,
     };
-    buffer.produce(decoded) catch |err| {
+    buffer.writeItem(decoded) catch |err| {
         std.log.err("ring buffer err: {}", .{err});
         if (thumbnail) |*thumb| thumb.deinit();
         image.deinit();
@@ -182,7 +181,7 @@ fn decode_image(
 }
 
 fn decode_thumbnail(
-    buffer: *RingBuffer(DecodedImage),
+    buffer: *DecodedImages,
     alloc: std.mem.Allocator,
     fs_state: *const fs.FsState,
     id: img.ImageId,
@@ -201,7 +200,7 @@ fn decode_thumbnail(
         alloc.free(file_path);
         return;
     };
-    const decoded = .{
+    const decoded: DecodedImage = .{
         .destroy_path = true,
         .do_add = false,
         .thumbnail = thumbnail,
@@ -209,7 +208,7 @@ fn decode_thumbnail(
         .path = file_path,
         .id = id,
     };
-    buffer.produce(decoded) catch |err| {
+    buffer.writeItem(decoded) catch |err| {
         std.log.err("ring buffer err: {}", .{err});
         thumbnail.deinit();
         alloc.free(file_path);
@@ -226,7 +225,7 @@ pub const UiState = struct {
     images_state: ImagesState,
     images_to_show: ShownImages,
     open_images: OpenImages,
-    image_buffer: *RingBuffer(DecodedImage),
+    image_buffer: *DecodedImages,
     alloc: std.mem.Allocator,
     fs_state: *fs.FsState,
     gfx: *graphics.GraphicsState,
@@ -280,11 +279,11 @@ pub const UiState = struct {
                     if (is_wide) {
                         break :pad [_]f32{
                             0.0,
-                            (@intToFloat(f32, both_size) - size[1]) / 2.0,
+                            (@as(f32, @floatFromInt(both_size)) - size[1]) / 2.0,
                         };
                     } else {
                         break :pad [_]f32{
-                            (@intToFloat(f32, both_size) - size[0]) / 2.0,
+                            (@as(f32, @floatFromInt(both_size)) - size[0]) / 2.0,
                             0.0,
                         };
                     }
@@ -299,7 +298,7 @@ pub const UiState = struct {
                 uitils.popStyleVars(1);
                 break :click clicked;
             } else {
-                const bs = @intToFloat(f32, both_size);
+                const bs = @as(f32, @floatFromInt(both_size));
                 _ = zgui.button(
                     "###image_button_no_img",
                     .{ .w = bs, .h = bs },
@@ -336,17 +335,15 @@ pub const UiState = struct {
             const initial_window_size = size: {
                 if (image.width > image.height) {
                     const viewport_x = viewport_size[0] * 0.7;
-                    if (image.width > @floatToInt(u32, viewport_x)) {
-                        break :size image.fit_to_width_size(@floatToInt(
-                            u32,
+                    if (image.width > @as(u32, @intFromFloat(viewport_x))) {
+                        break :size image.fit_to_width_size(@intFromFloat(
                             viewport_x,
                         ));
                     }
                 } else {
                     const viewport_y = viewport_size[1] * 0.7;
-                    if (image.height > @floatToInt(u32, viewport_y)) {
-                        break :size image.fit_to_height_size(@floatToInt(
-                            u32,
+                    if (image.height > @as(u32, @intFromFloat(viewport_y))) {
+                        break :size image.fit_to_height_size(@intFromFloat(
                             viewport_y,
                         ));
                     }
@@ -371,7 +368,7 @@ pub const UiState = struct {
         if (maybe_image) |image| {
             // the image
             const size = image.fit_to_width_size(
-                @floatToInt(u32, zgui.getWindowSize()[0] - metadata_size),
+                @intFromFloat(zgui.getWindowSize()[0] - metadata_size),
             );
             const tex_id = self.gfx.gctx.lookupResource(image.texture).?;
             _ = zgui.beginChild("image", .{ .w = size[0], .h = size[1] });
@@ -407,7 +404,7 @@ pub const UiState = struct {
             zgui.textUnformatted("height: loading");
         }
         zgui.textWrapped("path: {s}", .{path});
-        zgui.textWrapped("hash: {s}", .{std.fmt.fmtSliceHexLower(&@bitCast([16]u8, id))});
+        zgui.textWrapped("hash: {s}", .{std.fmt.fmtSliceHexLower(&@as([16]u8, @bitCast(id)))});
         zgui.textUnformatted("tags");
         zgui.sameLine(.{});
         const submit = zgui.inputTextWithHint(
@@ -422,15 +419,15 @@ pub const UiState = struct {
     }
 
     fn consume_images(self: *Self) !void {
-        var image: ?DecodedImage = try self.image_buffer.consume();
+        var image: ?DecodedImage = self.image_buffer.readItem();
         while (image != null) {
             var decoded = image.?;
             defer decoded.deinit(self.alloc);
-            var image_id = try self.images_state.load_image(decoded);
+            const image_id = try self.images_state.load_image(decoded);
             if (decoded.do_add) {
                 try self.images_to_show.put(image_id, {});
             }
-            image = try self.image_buffer.consume();
+            image = self.image_buffer.readItem();
         }
     }
 
@@ -494,7 +491,7 @@ pub const UiState = struct {
         defer zgui.end();
 
         // content
-        zgui.beginTable("areas", .{
+        _ = zgui.beginTable("areas", .{
             .column = 2,
             .flags = .{
                 .borders = zgui.TableBorderFlags.inner,
@@ -539,7 +536,7 @@ pub const UiState = struct {
                     self.images_to_show.put(id.*, {}) catch unreachable;
                 }
             }
-            std.mem.copy(u8, &self.current_tags, &search_buf);
+            std.mem.copyForwards(u8, &self.current_tags, &search_buf);
         }
 
         if (self.current_tags[0] != 0) {
@@ -569,20 +566,20 @@ pub const UiState = struct {
         const avail_width = max_width - line_args.offset_from_start_x;
         // TODO: this should come from some sort of settings
         const items_per_line: usize = 6;
-        const width_per_item = avail_width / @intToFloat(f32, items_per_line);
+        const width_per_item = avail_width / @as(f32, @floatFromInt(items_per_line));
         // TODO: probably replace this with a proper usage of some scroll area
         // but it's whatever for now lol
-        zgui.beginTable("images", .{ .column = 1, .flags = .{ .scroll_y = true } });
+        _ = zgui.beginTable("images", .{ .column = 1, .flags = .{ .scroll_y = true } });
         _ = zgui.tableNextColumn();
         // actually add the images
         zgui.sameLine(.{});
         for (self.images_to_show.keys()) |image_id| {
             var maybe_open_state = self.open_images.get(image_id);
             var is_open = maybe_open_state != null;
-            if (self.add_image(image_id, @floatToInt(u32, width_per_item))) {
+            if (self.add_image(image_id, @intFromFloat(width_per_item))) {
                 var new_edit_tags_buf = std.mem.zeroes([1024:0]u8);
                 if (self.images_state.get_tags(image_id)) |current_tags| {
-                    std.mem.copy(u8, &new_edit_tags_buf, current_tags);
+                    std.mem.copyForwards(u8, &new_edit_tags_buf, current_tags);
                 }
                 self.open_images.put(
                     image_id,
@@ -631,9 +628,10 @@ pub fn create(
     graphics_state: *graphics.GraphicsState,
     fs_state: *fs.FsState,
 ) !*UiState {
-    var image_buffer = try allocator.create(RingBuffer(DecodedImage));
-    try image_buffer.init(1024, allocator);
+    var image_buffer = try allocator.create(DecodedImages);
+    image_buffer.* = DecodedImages.init(allocator);
     errdefer image_buffer.deinit();
+    errdefer allocator.destroy(image_buffer);
 
     var image_paths = try fs_state.read_db_file(db.Paths);
     errdefer image_paths.deinit();

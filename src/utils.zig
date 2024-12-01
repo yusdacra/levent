@@ -14,5 +14,5 @@ pub inline fn merge_packed_structs(comptime number_type: type, value: anytype, o
             );
         };
     }
-    return @bitCast(@TypeOf(value), @bitCast(number_type, value) | @bitCast(number_type, other_value));
+    return @bitCast(@as(number_type, @bitCast(value)) | @as(number_type, @bitCast(other_value)));
 }

@@ -66,7 +66,7 @@ pub fn StrStorage(comptime Id: []const u8) type {
         }
 
         pub fn add(self: *Self, image_id: Self.Key, str: Self.Value) !void {
-            var result = try self.map.getOrPut(image_id);
+            const result = try self.map.getOrPut(image_id);
             // destroy old path
             if (result.found_existing)
                 self.alloc.free(result.value_ptr.*);
@@ -96,12 +96,12 @@ pub fn filter_tags(
     t_value: *T,
     tags: [:0]const u8,
 ) void {
-    var separated_tags = std.mem.split(u8, tags, " ");
+    var separated_tags = std.mem.splitAny(u8, tags, " ");
 
     var images = get_images(t_value);
     var key_iter = images.map.keyIterator();
     while (key_iter.next()) |id| {
-        var img_tags = std.mem.split(u8, images.map.get(id.*).?, " ");
+        var img_tags = std.mem.splitAny(u8, images.map.get(id.*).?, " ");
         const found = found: {
             while (separated_tags.next()) |tag| {
                 while (img_tags.next()) |otag| {

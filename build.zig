@@ -1,75 +1,80 @@
 const std = @import("std");
 
-// zgui stuff
-const zgui = @import("libs/zig-gamedev/libs/zgui/build.zig");
-// Needed for glfw/wgpu rendering backend
-const zglfw = @import("libs/zig-gamedev/libs/zglfw/build.zig");
-const zgpu = @import("libs/zig-gamedev/libs/zgpu/build.zig");
-const zpool = @import("libs/zig-gamedev/libs/zpool/build.zig");
-const zstbi = @import("libs/zig-gamedev/libs/zstbi/build.zig");
-const nfdzig = @import("libs/nfd-zig/build.zig");
-
-pub fn build(b: *std.build.Builder) !void {
-    // Standard target options allows the person running `zig build` to choose
-    // what target to build for. Here we do not override the defaults, which
-    // means any target is allowed, and the default is native. Other options
-    // for restricting supported target set are available.
+pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
 
-    // Standard release options allow the person running `zig build` to select
-    // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall.
-    const mode = b.standardReleaseOptions();
-
-    const exe = b.addExecutable("levent", "src/main.zig");
-
-    const build_options = b.addOptions();
-    build_options.addOption(bool, "enable-tsan", false);
-    exe.addOptions("build_options", build_options);
-
-    if (b.option(bool, "enable-tsan", "Enable thread sanitizer") orelse false) {
-        exe.sanitize_thread = true;
-    }
-    if (std.os.getenv("ZLIB_LIBPATH")) |path| {
-        exe.addLibraryPath(path);
-    }
-
-    // Needed for glfw/wgpu rendering backend
-    const zgpu_options = zgpu.BuildOptionsStep.init(b, .{});
-    const zgpu_pkg = zgpu.getPkg(&.{ zgpu_options.getPkg(), zpool.pkg, zglfw.pkg });
-
-    const zgui_options = zgui.BuildOptionsStep.init(b, .{ .backend = .glfw_wgpu });
-    const zgui_pkg = zgui.getPkg(&.{zgui_options.getPkg()});
-
-    exe.addPackage(zgui_pkg);
-    exe.addPackage(zglfw.pkg);
-    exe.addPackage(zgpu_pkg);
-    exe.addPackage(zstbi.pkg);
-    exe.addPackage(nfdzig.getPackage("nfd"));
-    exe.addPackage(.{
-        .name = "zig-ring-buffer",
-        .source = .{ .path = thisDir() ++ "/libs/zig-ring-buffer/src/main.zig" },
+    const src_path = b.pathJoin(&.{"src"});
+    const exe = b.addExecutable(.{
+        .name = "levent",
+        .root_source_file = b.path(b.pathJoin(&.{ src_path, "main.zig" })),
+        .target = target,
+        .optimize = optimize,
     });
 
-    exe.setTarget(target);
-    exe.setBuildMode(mode);
-    exe.install();
+    const zglfw = b.dependency("zglfw", .{
+        .target = target,
+    });
+    exe.root_module.addImport("zglfw", zglfw.module("root"));
+    exe.linkLibrary(zglfw.artifact("glfw"));
 
-    zgpu.link(exe, zgpu_options);
-    zgui.link(exe, zgui_options);
-    zglfw.link(exe);
-    zstbi.link(exe);
-    exe.linkLibrary(nfdzig.makeLib(b, mode, target));
+    @import("zgpu").addLibraryPathsTo(exe);
+    const zgpu = b.dependency("zgpu", .{
+        .target = target,
+    });
+    exe.root_module.addImport("zgpu", zgpu.module("root"));
+    exe.linkLibrary(zgpu.artifact("zdawn"));
 
-    const run_cmd = exe.run();
-    run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
+    const zgui = b.dependency("zgui", .{
+        .target = target,
+        .backend = .glfw_wgpu,
+        .with_te = true,
+    });
+    exe.root_module.addImport("zgui", zgui.module("root"));
+    exe.linkLibrary(zgui.artifact("imgui"));
+
+    const zstbi = b.dependency("zstbi", .{
+        .target = target,
+    });
+    exe.root_module.addImport("zstbi", zstbi.module("root"));
+    exe.linkLibrary(zstbi.artifact("zstbi"));
+
+    const nfd = b.dependency("nfd", .{});
+    exe.root_module.addImport("nfd", nfd.module("nfd"));
+
+    const exe_options = b.addOptions();
+    exe.root_module.addOptions("build_options", exe_options);
+
+    // exe_b.options.addOption([]const u8, "content_dir", content_dir);
+    // const content_path = b.pathJoin(&.{ cwd_path, content_dir });
+    // const install_content_step = b.addInstallDirectory(.{
+    //     .source_dir = b.path(content_path),
+    //     .install_dir = .{ .custom = "" },
+    //     .install_subdir = b.pathJoin(&.{ "bin", content_dir }),
+    // });
+    // exe.step.dependOn(&install_content_step.step);
+
+    if (target.result.os.tag == .macos) {
+        if (b.lazyDependency("system_sdk", .{})) |system_sdk| {
+            exe.addLibraryPath(system_sdk.path("macos12/usr/lib"));
+            exe.addSystemFrameworkPath(system_sdk.path("macos12/System/Library/Frameworks"));
+        }
     }
 
-    const run_step = b.step("run", "Run the app");
-    run_step.dependOn(&run_cmd.step);
-}
+    // TODO: Problems with LTO on Windows.
+    if (exe.rootModuleTarget().os.tag == .windows) {
+        exe.want_lto = false;
+    }
 
-inline fn thisDir() []const u8 {
-    return comptime std.fs.path.dirname(@src().file) orelse ".";
+    if (exe.root_module.optimize != .Debug) {
+        exe.root_module.strip = true;
+    }
+
+    const install_exe = b.addInstallArtifact(exe, .{});
+    b.getInstallStep().dependOn(&install_exe.step);
+    b.step("levent", "Build levent").dependOn(&install_exe.step);
+
+    const run_cmd = b.addRunArtifact(exe);
+    run_cmd.step.dependOn(&install_exe.step);
+    b.step("run", "Run levent").dependOn(&run_cmd.step);
 }
