@@ -2,6 +2,7 @@ const std = @import("std");
 const zstbi = @import("zstbi");
 const img = @import("./gui/image.zig");
 const db = @import("./db.zig");
+const utils = @import("./utils.zig");
 
 const FindDirError = error{NotFound};
 
@@ -13,7 +14,7 @@ fn find_cache_dir(alloc: std.mem.Allocator) ![]const u8 {
         return try std.fmt.allocPrint(alloc, "{s}/levent", .{cache_dir});
     } else if (envmap.get("HOME")) |home_dir| {
         return try std.fmt.allocPrint(alloc, "{s}/.cache/levent", .{home_dir});
-    } else if (envmap.get("APPDATA")) |cache_dir| {
+    } else if (envmap.get("TEMP")) |cache_dir| {
         return try std.fmt.allocPrint(alloc, "{s}/levent", .{cache_dir});
     } else {
         std.log.err("no cache dir found", .{});
@@ -91,17 +92,23 @@ pub const FsState = struct {
         return state;
     }
 
-    pub fn write_thumbnail(
+    pub fn get_thumbnail_path(
         self: *const FsState,
-        og_image: *const zstbi.Image,
-        thumbnail: *const zstbi.Image,
-    ) !void {
-        const image_id = img.id.hash(og_image.data);
-        const path = try std.fmt.allocPrintZ(
+        image_id: img.ImageId,
+    ) [:0]u8 {
+        return std.fmt.allocPrintZ(
             self.alloc,
             "{s}/{d}.jpg",
             .{ self.cache_dir, image_id },
-        );
+        ) catch utils.oomPanic();
+    }
+
+    pub fn write_thumbnail(
+        self: *const FsState,
+        image_id: img.ImageId,
+        thumbnail: *const zstbi.Image,
+    ) !void {
+        const path = self.get_thumbnail_path(image_id);
         defer self.alloc.free(path);
         try thumbnail.writeToFile(path, .{ .jpg = .{ .quality = 70 } });
     }

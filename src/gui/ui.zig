@@ -14,26 +14,25 @@ const print = std.debug.print;
 
 pub const window_title = "levent";
 
-const DecodedImages = std.fifo.LinearFifo(DecodedImage, .Dynamic);
+const CmdChannel = std.fifo.LinearFifo(Command, .Dynamic);
 const Image = zstbi.Image;
 
-const DecodedImage = struct {
-    id: ?img.ImageId,
-    do_add: bool,
-    image: ?Image,
-    thumbnail: ?Image,
-    path: [:0]const u8,
-    destroy_path: bool,
-
-    const Self = @This();
-
-    fn deinit(self: *Self, alloc: std.mem.Allocator) void {
-        if (self.image) |*dimage| dimage.deinit();
-        if (self.thumbnail) |*thumbnail| thumbnail.deinit();
-        if (self.destroy_path) {
-            alloc.free(self.path);
-        }
-    }
+const Command = union(enum) {
+    add_image: struct {
+        id: img.ImageId,
+        image: Image,
+    },
+    add_thumbnail: struct {
+        id: img.ImageId,
+        image: Image,
+    },
+    db_add_image: struct {
+        id: img.ImageId,
+        path: [:0]const u8,
+    },
+    show_image: struct {
+        id: img.ImageId,
+    },
 };
 
 const ImagesState = struct {
@@ -45,35 +44,38 @@ const ImagesState = struct {
     alloc: std.mem.Allocator,
     gfx: *graphics.GraphicsState,
 
-    fn load_image(self: *ImagesState, decoded: DecodedImage) !img.ImageId {
-        const image_id = decoded.id orelse img.id.hash(decoded.image.?.data);
-        if (decoded.do_add) {
-            try self.image_paths.add(image_id, decoded.path);
-        }
-        if (decoded.thumbnail) |thumbnail| {
-            const thumbnail_handle = img.load_image(self.gfx.gctx, &thumbnail);
-            try self.thumbnails.add(image_id, thumbnail_handle);
-        } else {
-            const handle = img.load_image(self.gfx.gctx, &decoded.image.?);
-            try self.images.add(image_id, handle);
-        }
-        return image_id;
-    }
-
     inline fn get_path(self: *const ImagesState, id: img.ImageId) ?[:0]const u8 {
         return self.image_paths.map.get(id);
     }
 
-    inline fn get_tags(self: *ImagesState, id: img.ImageId) ?[:0]const u8 {
+    inline fn put_path(self: *ImagesState, id: img.ImageId, path: [:0]const u8) !void {
+        try self.image_paths.map.put(id, path);
+    }
+
+    inline fn get_tags(self: *const ImagesState, id: img.ImageId) ?[:0]const u8 {
         return self.image_tags.map.get(id);
     }
 
-    inline fn get_image(self: *ImagesState, id: img.ImageId) ?img.ImageHandle {
+    inline fn get_image(self: *const ImagesState, id: img.ImageId) ?img.ImageHandle {
         return self.images.get(id);
     }
 
-    inline fn get_thumbnail(self: *ImagesState, id: img.ImageId) ?img.ImageHandle {
+    inline fn put_image(self: *ImagesState, id: img.ImageId, image: *Image) !img.ImageHandle {
+        defer image.deinit();
+        const handle = img.load_image(self.gfx.gctx, image);
+        try self.images.add(id, handle);
+        return handle;
+    }
+
+    inline fn get_thumbnail(self: *const ImagesState, id: img.ImageId) ?img.ImageHandle {
         return self.thumbnails.get(id);
+    }
+
+    inline fn put_thumbnail(self: *ImagesState, id: img.ImageId, thumbnail: *Image) !img.ImageHandle {
+        defer thumbnail.deinit();
+        const thumbnail_handle = img.load_image(self.gfx.gctx, thumbnail);
+        try self.thumbnails.add(id, thumbnail_handle);
+        return thumbnail_handle;
     }
 
     fn deinit(self: *ImagesState) void {
@@ -86,7 +88,7 @@ const ImagesState = struct {
 };
 
 fn impl_select_image(
-    buffer: *DecodedImages,
+    buffer: *CmdChannel,
     alloc: std.mem.Allocator,
     fs_state: *const fs.FsState,
 ) !void {
@@ -95,12 +97,12 @@ fn impl_select_image(
         defer nfd.freePath(path);
         // this will be put in Images and will be destroyed with it
         const image_path = try std.fmt.allocPrintZ(alloc, "{s}", .{path});
-        decode_image(buffer, alloc, fs_state, image_path, true, true, false);
+        decode_image(buffer, fs_state, image_path, true, true);
     }
 }
 
 fn impl_select_folder(
-    buffer: *DecodedImages,
+    buffer: *CmdChannel,
     alloc: std.mem.Allocator,
     fs_state: *const fs.FsState,
 ) !void {
@@ -119,100 +121,82 @@ fn impl_select_folder(
                     "{s}/{s}",
                     .{ dir_path, entry.path },
                 );
-                decode_image(buffer, alloc, fs_state, file_path, true, true, false);
+                decode_image(buffer, fs_state, file_path, true, true);
             }
         }
     }
 }
 
+const ImplLoadThumbail = struct {
+    id: img.ImageId,
+    image_path: [:0]const u8,
+};
+
 // ids_to_load will be freed by this function.
 fn impl_load_thumbnails(
-    buffer: *DecodedImages,
+    buffer: *CmdChannel,
     alloc: std.mem.Allocator,
     fs_state: *const fs.FsState,
-    ids_to_load: []const img.ImageId,
+    thumbs_to_load: []const ImplLoadThumbail,
 ) !void {
-    defer alloc.free(ids_to_load);
-    for (ids_to_load) |id| {
-        decode_thumbnail(buffer, alloc, fs_state, id);
+    defer alloc.free(thumbs_to_load);
+    for (thumbs_to_load) |thumb| {
+        const thumbnail_path = fs_state.get_thumbnail_path(thumb.id);
+        defer alloc.free(thumbnail_path);
+        const access_result = std.fs.accessAbsoluteZ(thumbnail_path, .{});
+        if (access_result == std.fs.Dir.AccessError.FileNotFound)
+            decode_image(buffer, fs_state, thumb.image_path, true, false)
+        else
+            decode_thumbnail(buffer, alloc, fs_state, thumb.id);
     }
 }
 
 fn decode_image(
-    buffer: *DecodedImages,
-    alloc: std.mem.Allocator,
+    buffer: *CmdChannel,
     fs_state: *const fs.FsState,
     file_path: [:0]const u8,
-    do_add: bool,
     make_thumbnail: bool,
-    destroy_path: bool,
+    do_add: bool,
 ) void {
     std.log.debug("started decoding image on path {s}", .{file_path});
     var image = fs.read_image(file_path) catch |err| {
         std.log.err("could not decode image: {}", .{err});
-        if (do_add) alloc.free(file_path);
         return;
     };
-    var thumbnail = thumb: {
-        if (make_thumbnail) {
-            var temp = img.make_thumbnail(&image);
-            fs_state.write_thumbnail(&image, &temp) catch |err| {
-                std.log.err("could not write thumbnail: {}", .{err});
-            };
-            break :thumb temp;
-        } else {
-            break :thumb null;
-        }
+    const id = img.id.hash(image.data);
+
+    if (make_thumbnail) generate_thumbnail(buffer, fs_state, &image, id);
+
+    buffer.writeItem(.{ .add_image = .{ .image = image, .id = id } }) catch utils.oomPanic();
+    if (do_add) {
+        buffer.writeItem(.{ .db_add_image = .{ .path = file_path, .id = id } }) catch utils.oomPanic();
+        buffer.writeItem(.{ .show_image = .{ .id = id } }) catch utils.oomPanic();
+    }
+}
+
+fn generate_thumbnail(buffer: *CmdChannel, fs_state: *const fs.FsState, image: *const Image, id: img.ImageId) void {
+    var thumbnail = img.make_thumbnail(image);
+    fs_state.write_thumbnail(id, &thumbnail) catch |err| {
+        std.log.err("could not write thumbnail: {}", .{err});
     };
-    const decoded: DecodedImage = .{
-        .destroy_path = destroy_path,
-        .do_add = do_add,
-        .thumbnail = thumbnail,
-        .image = image,
-        .path = file_path,
-        .id = null,
-    };
-    buffer.writeItem(decoded) catch |err| {
-        std.log.err("ring buffer err: {}", .{err});
-        if (thumbnail) |*thumb| thumb.deinit();
-        image.deinit();
-        if (do_add) alloc.free(file_path);
-    };
+    buffer.writeItem(.{ .add_thumbnail = .{ .image = thumbnail, .id = id } }) catch utils.oomPanic();
 }
 
 fn decode_thumbnail(
-    buffer: *DecodedImages,
+    buffer: *CmdChannel,
     alloc: std.mem.Allocator,
     fs_state: *const fs.FsState,
     id: img.ImageId,
 ) void {
-    const file_path = std.fmt.allocPrintZ(
-        alloc,
-        "{s}/{d}.jpg",
-        .{ fs_state.cache_dir, id },
-    ) catch |err| {
-        std.log.err("can't allocate: {}", .{err});
-        return;
-    };
+    const file_path = fs_state.get_thumbnail_path(id);
+    defer alloc.free(file_path);
+
     std.log.debug("started decoding image on path {s}", .{file_path});
-    var thumbnail = fs.read_image(file_path) catch |err| {
+    const thumbnail = fs.read_image(file_path) catch |err| {
         std.log.err("could not decode thumbnail image: {}", .{err});
-        alloc.free(file_path);
         return;
     };
-    const decoded: DecodedImage = .{
-        .destroy_path = true,
-        .do_add = false,
-        .thumbnail = thumbnail,
-        .image = null,
-        .path = file_path,
-        .id = id,
-    };
-    buffer.writeItem(decoded) catch |err| {
-        std.log.err("ring buffer err: {}", .{err});
-        thumbnail.deinit();
-        alloc.free(file_path);
-    };
+    buffer.writeItem(.{ .add_thumbnail = .{ .image = thumbnail, .id = id } }) catch utils.oomPanic();
 }
 
 const ShownImages = std.AutoArrayHashMap(img.ImageId, void);
@@ -225,7 +209,7 @@ pub const UiState = struct {
     images_state: ImagesState,
     images_to_show: ShownImages,
     open_images: OpenImages,
-    image_buffer: *DecodedImages,
+    cmd_channel: *CmdChannel,
     alloc: std.mem.Allocator,
     fs_state: *fs.FsState,
     gfx: *graphics.GraphicsState,
@@ -238,7 +222,7 @@ pub const UiState = struct {
         var thread = std.Thread.spawn(
             .{},
             impl_select_image,
-            .{ self.image_buffer, self.alloc, self.fs_state },
+            .{ self.cmd_channel, self.alloc, self.fs_state },
         ) catch |err| {
             std.log.err("cannot spawn thread: {}", .{err});
             return;
@@ -250,7 +234,7 @@ pub const UiState = struct {
         var thread = std.Thread.spawn(
             .{},
             impl_select_folder,
-            .{ self.image_buffer, self.alloc, self.fs_state },
+            .{ self.cmd_channel, self.alloc, self.fs_state },
         ) catch |err| {
             std.log.err("cannot spawn thread: {}", .{err});
             return;
@@ -298,12 +282,12 @@ pub const UiState = struct {
                 uitils.popStyleVars(1);
                 break :click clicked;
             } else {
-                const bs = @as(f32, @floatFromInt(both_size));
-                _ = zgui.button(
+                const bs: f32 = @floatFromInt(both_size);
+                const clicked = zgui.button(
                     "###image_button_no_img",
                     .{ .w = bs, .h = bs },
                 );
-                break :click false;
+                break :click clicked;
             }
         };
 
@@ -418,16 +402,24 @@ pub const UiState = struct {
         zgui.endChild();
     }
 
-    fn consume_images(self: *Self) !void {
-        var image: ?DecodedImage = self.image_buffer.readItem();
-        while (image != null) {
-            var decoded = image.?;
-            defer decoded.deinit(self.alloc);
-            const image_id = try self.images_state.load_image(decoded);
-            if (decoded.do_add) {
-                try self.images_to_show.put(image_id, {});
+    fn consume_commands(self: *Self) !void {
+        var cmd: ?Command = self.cmd_channel.readItem();
+        while (cmd != null) {
+            switch (cmd.?) {
+                .add_image => |image| {
+                    _ = try self.images_state.put_image(image.id, @constCast(&image.image));
+                },
+                .add_thumbnail => |thumb| {
+                    _ = try self.images_state.put_thumbnail(thumb.id, @constCast(&thumb.image));
+                },
+                .db_add_image => |data| {
+                    try self.images_state.put_path(data.id, data.path);
+                },
+                .show_image => |data| {
+                    self.mark_image_as_shown(data.id);
+                },
             }
-            image = self.image_buffer.readItem();
+            cmd = self.cmd_channel.readItem();
         }
     }
 
@@ -436,11 +428,9 @@ pub const UiState = struct {
             .{},
             decode_image,
             .{
-                self.image_buffer,
-                self.alloc,
+                self.cmd_channel,
                 self.fs_state,
                 self.images_state.get_path(image_id).?,
-                false,
                 false,
                 false,
             },
@@ -463,8 +453,8 @@ pub const UiState = struct {
 
     pub fn draw(self: *Self) void {
         // before *everything*, load in images!
-        self.consume_images() catch |err| {
-            std.log.err("cannot load images: {}", .{err});
+        self.consume_commands() catch |err| {
+            std.log.err("cannot process commands: {}", .{err});
         };
         // set main window size and position to entire viewport
         const viewport = zgui.getMainViewport();
@@ -613,10 +603,10 @@ pub const UiState = struct {
 
     pub fn deinit(self: *UiState) void {
         self.images_state.deinit();
-        self.image_buffer.deinit();
+        self.cmd_channel.deinit();
         self.images_to_show.deinit();
         self.open_images.deinit();
-        self.alloc.destroy(self.image_buffer);
+        self.alloc.destroy(self.cmd_channel);
         self.alloc.destroy(self);
         // gfx is deinitialized in main.zig
         // fs state is deinitalized in main.zig
@@ -628,10 +618,10 @@ pub fn create(
     graphics_state: *graphics.GraphicsState,
     fs_state: *fs.FsState,
 ) !*UiState {
-    var image_buffer = try allocator.create(DecodedImages);
-    image_buffer.* = DecodedImages.init(allocator);
-    errdefer image_buffer.deinit();
-    errdefer allocator.destroy(image_buffer);
+    var cmd_channel = try allocator.create(CmdChannel);
+    cmd_channel.* = CmdChannel.init(allocator);
+    errdefer cmd_channel.deinit();
+    errdefer allocator.destroy(cmd_channel);
 
     var image_paths = try fs_state.read_db_file(db.Paths);
     errdefer image_paths.deinit();
@@ -646,20 +636,23 @@ pub fn create(
     // later on we should only do this if all images are being displayed
     // ensuring the capacity here is a good idea regardless though
     var i: usize = 0;
-    var thumbnails_to_load = try allocator.alloc(img.ImageId, image_paths.map.count());
+    var thumbnails_to_load = try allocator.alloc(ImplLoadThumbail, image_paths.map.count());
     try shown_images.ensureUnusedCapacity(image_paths.map.count());
     var id_iter = image_paths.map.keyIterator();
     while (id_iter.next()) |id| {
         // cannot fail since we ensure capacity beforehand
         shown_images.put(id.*, {}) catch unreachable;
-        thumbnails_to_load[i] = id.*;
+        thumbnails_to_load[i] = .{
+            .id = id.*,
+            .image_path = image_paths.map.get(id.*).?,
+        };
         i += 1;
     }
 
     const thumbnail_thread = try std.Thread.spawn(
         .{},
         impl_load_thumbnails,
-        .{ image_buffer, allocator, fs_state, thumbnails_to_load },
+        .{ cmd_channel, allocator, fs_state, thumbnails_to_load },
     );
     thumbnail_thread.detach();
 
@@ -675,7 +668,7 @@ pub fn create(
         },
         .images_to_show = shown_images,
         .open_images = OpenImages.init(allocator),
-        .image_buffer = image_buffer,
+        .cmd_channel = cmd_channel,
         .alloc = allocator,
         .gfx = graphics_state,
         .fs_state = fs_state,

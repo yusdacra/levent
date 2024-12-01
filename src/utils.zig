@@ -16,3 +16,7 @@ pub inline fn merge_packed_structs(comptime number_type: type, value: anytype, o
     }
     return @bitCast(@as(number_type, @bitCast(value)) | @as(number_type, @bitCast(other_value)));
 }
+
+pub fn oomPanic() noreturn {
+    std.debug.panic("out of memory", .{});
+}
