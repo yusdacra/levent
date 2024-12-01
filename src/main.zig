@@ -9,9 +9,11 @@ const zglfw = @import("zglfw");
 const zgui = @import("zgui");
 const zstbi = @import("zstbi");
 
-pub const log_level: std.log.Level = switch (builtin.mode) {
-    .Debug => .debug,
-    .ReleaseSafe, .ReleaseFast, .ReleaseSmall => .info,
+pub const std_options: std.Options = .{
+    .log_level = switch (builtin.mode) {
+        .Debug => .debug,
+        .ReleaseSafe, .ReleaseFast, .ReleaseSmall => .info,
+    },
 };
 
 pub fn main() void {
