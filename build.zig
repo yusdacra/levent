@@ -46,6 +46,10 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("clap", clap.module("clap"));
 
     const exe_options = b.addOptions();
+    var envmap = std.process.getEnvMap(b.allocator) catch @panic("oom?");
+    defer envmap.deinit();
+    exe_options.addOption([]const u8, "git_commit", b.option([]const u8, "git_commit", "Current git commit") orelse envmap.get("LEVENT_GIT_COMMIT") orelse "unknown");
+    exe_options.addOption([]const u8, "version", b.option([]const u8, "version", "Current version") orelse envmap.get("LEVENT_VERSION") orelse "unknown");
     exe.root_module.addOptions("build_options", exe_options);
 
     // exe_b.options.addOption([]const u8, "content_dir", content_dir);

@@ -4,6 +4,7 @@ const fs = @import("./fs.zig");
 const db = @import("./db.zig");
 
 const builtin = @import("builtin");
+const build_options = @import("build_options");
 const std = @import("std");
 const zglfw = @import("zglfw");
 const zgui = @import("zgui");
@@ -50,7 +51,7 @@ pub fn main() void {
         return;
     }
     if (res.args.version != 0) {
-        std.debug.print("0.0.0", .{});
+        std.debug.print("{s}-{s}", .{ build_options.version, build_options.git_commit });
         return;
     }
 
