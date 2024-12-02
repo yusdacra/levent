@@ -513,7 +513,7 @@ pub const UiState = struct {
         const do_search = zgui.inputTextWithHint(
             "###search",
             .{
-                .hint = "enter tags to search",
+                .hint = "search with tags",
                 .buf = search_buf[0..],
                 .flags = .{ .enter_returns_true = true },
             },

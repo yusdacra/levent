@@ -3,8 +3,12 @@ const zglfw = @import("zglfw");
 const zgpu = @import("zgpu");
 const zgui = @import("zgui");
 
+const FontMap = std.StringHashMap(zgui.Font);
+const DEFAULT_FONT = "comicmono";
+
 pub const GraphicsState = struct {
     gctx: *zgpu.GraphicsContext,
+    fonts: FontMap,
 
     pub fn new_frame(self: *GraphicsState) void {
         zgui.backend.newFrame(
@@ -17,6 +21,7 @@ pub const GraphicsState = struct {
         zgui.backend.deinit();
         zgui.deinit();
         self.gctx.destroy(allocator);
+        self.fonts.deinit();
         allocator.destroy(self);
     }
 
@@ -70,6 +75,11 @@ pub fn create(allocator: std.mem.Allocator, window: *zglfw.Window) !*GraphicsSta
         break :scale_factor if (scale[0] > scale[1]) scale[0] else scale[1];
     };
 
+    var fonts = FontMap.init(allocator);
+    errdefer fonts.deinit();
+    const comic_mono = zgui.io.addFontFromMemory(@embedFile("./res/comicmono/regular.ttf"), 16.0);
+    try fonts.put("comicmono", comic_mono);
+
     // This needs to be called *after* adding your custom fonts.
     zgui.backend.init(window, gctx.device, @intFromEnum(gctx.swapchain_descriptor.format), @intFromEnum(zgpu.wgpu.TextureFormat.undef));
 
@@ -80,7 +90,7 @@ pub fn create(allocator: std.mem.Allocator, window: *zglfw.Window) !*GraphicsSta
 
     // TODO: set a better default style later here
     style.window_min_size = .{ 320.0, 240.0 };
-    style.scrollbar_size = 6.0;
+    style.scrollbar_size = 16.0;
     style.window_border_size = 8.0;
     style.window_rounding = 8.0;
     style.window_padding = .{ 8.0, 8.0 };
@@ -92,9 +102,12 @@ pub fn create(allocator: std.mem.Allocator, window: *zglfw.Window) !*GraphicsSta
     }
     style.scaleAllSizes(scale_factor);
 
+    zgui.io.setDefaultFont(fonts.get(DEFAULT_FONT).?);
+
     const state = try allocator.create(GraphicsState);
     state.* = .{
         .gctx = gctx,
+        .fonts = fonts,
     };
 
     return state;
