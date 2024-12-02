@@ -26,7 +26,8 @@ pub fn main() void {
 
     const params = comptime clap.parseParamsComptime(
         \\-h, --help             Display this help and exit.
-        \\-v, --version  Output version information and exit.
+        \\-v, --version          Output version information and exit.
+        \\--purge-db             Purges the image database.
         \\
     );
 
@@ -60,6 +61,13 @@ pub fn main() void {
         return;
     };
     defer fs_state.deinit();
+
+    if (res.args.@"purge-db" != 0) {
+        fs_state.delete_db_file(db.Paths);
+        fs_state.delete_db_file(db.Tags);
+        std.log.info("cleared db", .{});
+        return;
+    }
 
     zstbi.init(allocator);
     defer zstbi.deinit();
