@@ -100,7 +100,7 @@ fn impl_select_image(
     if (file_path) |path| {
         defer nfd.freePath(path);
         // this will be put in Images and will be destroyed with it
-        const image_path = std.fmt.allocPrintZ(alloc, "{s}", .{path}) catch utils.oomPanic();
+        const image_path = alloc.dupeZ(u8, path) catch utils.oomPanic();
         thread_pool.spawn(decode_image, .{ chan, fs_state, image_path, true, true }) catch utils.oomPanic();
     }
 }
@@ -133,11 +133,7 @@ fn impl_select_folder(
         }) |entry| {
             if (entry.kind == .file) {
                 // this will be put in Images and will be destroyed with it
-                const file_path = std.fmt.allocPrintZ(
-                    alloc,
-                    "{s}/{s}",
-                    .{ dir_path, entry.path },
-                ) catch utils.oomPanic();
+                const file_path = std.fs.path.joinZ(alloc, &.{ dir_path, entry.path }) catch utils.oomPanic();
                 thread_pool.spawn(decode_image, .{ chan, fs_state, file_path, true, true }) catch utils.oomPanic();
             }
         }
@@ -258,12 +254,31 @@ pub const UiState = struct {
         };
     }
 
+    fn media_context_menu_items(_: *Self, path: [:0]const u8, tags: ?[:0]const u8) void {
+        if (zgui.menuItem("copy path", .{})) {
+            zgui.setClipboardText(path);
+        }
+        if (tags) |tags_str| {
+            if (zgui.menuItem("copy tags", .{})) {
+                zgui.setClipboardText(tags_str);
+            }
+        }
+    }
+
     fn add_image(self: *Self, id: img.ImageId, both_size: u32) bool {
         var buf = img.id.new_str_buf();
         const id_str = img.id.to_str(id, &buf);
 
         const maybe_image = self.images_state.get_thumbnail(id);
 
+        _ = zgui.beginChild(id_str, .{ .child_flags = .{ .always_auto_resize = true, .auto_resize_x = true, .auto_resize_y = true } });
+        defer zgui.endChild();
+        if (zgui.beginPopupContextWindow()) {
+            const path = self.images_state.get_path(id).?;
+            const tags = self.images_state.get_tags(id);
+            self.media_context_menu_items(path, tags);
+            zgui.endPopup();
+        }
         const clicked = click: {
             if (maybe_image) |image| {
                 const tex_id = self.gfx.gctx.lookupResource(image.texture).?;
@@ -328,7 +343,9 @@ pub const UiState = struct {
     fn show_image_window(self: *Self, id: img.ImageId, is_open: *bool, edit_tags_buf: [:0]u8) void {
         const maybe_image = self.images_state.get_image(id);
         const viewport_size = zgui.getMainViewport().getWorkSize();
-        const metadata_size: f32 = viewport_size[0] * 0.2;
+        const path = self.images_state.get_path(id).?;
+        const tags = self.images_state.get_tags(id);
+        const hash_str = std.fmt.fmtSliceHexLower(&@as([16]u8, @bitCast(id)));
 
         if (maybe_image) |image| {
             // set initial window size
@@ -352,70 +369,68 @@ pub const UiState = struct {
             };
             const style = zgui.getStyle();
             zgui.setNextWindowSize(.{
-                .w = initial_window_size[0] + metadata_size,
+                .w = initial_window_size[0],
                 .h = initial_window_size[1] + style.window_padding[1] * 5,
                 .cond = .once,
             });
         }
 
-        // get image id
-        var buf = img.id.new_str_buf();
-        const id_str = img.id.to_str(id, &buf);
+        const window_name =
+            // zig fmt: off
+            if (maybe_image) |image| std.fmt.allocPrintZ(self.alloc, "{s} ({d} x {d})", .{ std.fs.path.basename(path), image.width, image.height }) catch utils.oomPanic()
+            else std.fmt.allocPrintZ(self.alloc, "{s}", .{ std.fs.path.basename(path) }) catch utils.oomPanic();
+        defer self.alloc.free(window_name);
         // create window
-        _ = zgui.begin(id_str, .{ .popen = is_open });
+        _ = zgui.begin(window_name, .{ .popen = is_open });
         defer zgui.end();
+
+        if (zgui.collapsingHeader(".metadata", .{.default_open = false})) {
+            // the metadata
+            _ = zgui.beginChild("image_metadata", .{
+                .child_flags = .{
+                    .always_auto_resize = true,
+                    .auto_resize_y = true,
+                }
+            });
+            if (zgui.beginPopupContextWindow()) {
+                self.media_context_menu_items(path, tags);
+                zgui.endPopup();
+            }
+            if (maybe_image) |image| {
+                zgui.text(".width: {d}", .{image.width});
+                zgui.text(".height: {d}", .{image.height});
+            } else {
+                zgui.textUnformatted(".width: loading");
+                zgui.textUnformatted(".height: loading");
+            }
+            zgui.textWrapped(".path: {s}", .{path});
+            zgui.textWrapped(".hash: {s}", .{hash_str});
+            zgui.textUnformatted(".tags");
+            zgui.sameLine(.{});
+            const submit = zgui.inputTextWithHint(
+                "###edit_tags",
+                .{ .hint = "no tags", .buf = edit_tags_buf },
+            );
+            if (submit) {
+                const new_tags = self.alloc.dupeZ(u8, std.mem.sliceTo(edit_tags_buf, 0)) catch utils.oomPanic();
+                self.images_state.image_tags.add(id, new_tags) catch utils.oomPanic();
+            }
+            zgui.endChild();
+        }
+        zgui.newLine();
 
         if (maybe_image) |image| {
             // the image
             const size = image.fit_to_width_size(
-                @intFromFloat(zgui.getWindowSize()[0] - metadata_size),
+                @intFromFloat(zgui.getWindowSize()[0]),
             );
             const tex_id = self.gfx.gctx.lookupResource(image.texture).?;
             _ = zgui.beginChild("image", .{ .w = size[0], .h = size[1] });
             zgui.image(tex_id, .{ .w = size[0], .h = size[1] });
             zgui.endChild();
-            // image and metadata or on the "same line"
-            zgui.sameLine(.{});
         } else {
             zgui.textUnformatted("loading...");
         }
-
-        // the metadata
-        _ = zgui.beginChild("image_metadata", .{});
-        const path = self.images_state.get_path(id).?;
-        const tags = self.images_state.get_tags(id);
-        if (zgui.beginPopupContextWindow()) {
-            if (zgui.menuItem("copy path", .{})) {
-                zgui.setClipboardText(path);
-            }
-            if (tags) |tags_str| {
-                if (zgui.menuItem("copy tags", .{})) {
-                    zgui.setClipboardText(tags_str);
-                }
-            }
-            zgui.endPopup();
-        }
-        zgui.text("Metadata", .{});
-        if (maybe_image) |image| {
-            zgui.text("width: {d}", .{image.width});
-            zgui.text("height: {d}", .{image.height});
-        } else {
-            zgui.textUnformatted("width: loading");
-            zgui.textUnformatted("height: loading");
-        }
-        zgui.textWrapped("path: {s}", .{path});
-        zgui.textWrapped("hash: {s}", .{std.fmt.fmtSliceHexLower(&@as([16]u8, @bitCast(id)))});
-        zgui.textUnformatted("tags");
-        zgui.sameLine(.{});
-        const submit = zgui.inputTextWithHint(
-            "###edit_tags",
-            .{ .hint = "no tags", .buf = edit_tags_buf },
-        );
-        if (submit) {
-            const new_tags = self.alloc.dupeZ(u8, std.mem.sliceTo(edit_tags_buf, 0)) catch unreachable;
-            self.images_state.image_tags.add(id, new_tags) catch unreachable;
-        }
-        zgui.endChild();
     }
 
     fn consume_commands(self: *Self) !void {
@@ -494,24 +509,6 @@ pub const UiState = struct {
         uitils.popStyleVars(3);
         defer zgui.end();
 
-        // content
-        _ = zgui.beginTable("areas", .{
-            .column = 2,
-            .flags = .{
-                .borders = zgui.TableBorderFlags.inner,
-                .resizable = true,
-            },
-        });
-        zgui.tableSetupColumn("main buttons", .{
-            .init_width_or_height = 150,
-            .flags = .{
-                .width_fixed = true,
-                .no_reorder = true,
-            },
-        });
-
-        _ = zgui.tableNextColumn();
-
         zgui.pushItemWidth(150.0);
         var search_buf = std.mem.zeroes([1024:0]u8);
         const do_search = zgui.inputTextWithHint(
@@ -522,6 +519,7 @@ pub const UiState = struct {
                 .flags = .{ .enter_returns_true = true },
             },
         );
+        zgui.sameLine(.{});
         zgui.popItemWidth();
 
         if (do_search) {
@@ -546,20 +544,24 @@ pub const UiState = struct {
         if (self.current_tags[0] != 0) {
             zgui.textWrapped("{s}", .{self.current_tags[0.. :0]});
         }
-
-        if (zgui.button("quit", .{})) {
-            self.quit = true;
-        }
+        zgui.sameLine(.{});
 
         if (zgui.button("add image", .{})) {
             self.select_image();
         }
+        zgui.sameLine(.{});
 
         if (zgui.button("add folder", .{})) {
             self.select_folder();
         }
+        zgui.sameLine(.{});
 
-        _ = zgui.tableNextColumn();
+        if (zgui.button("quit", .{})) {
+            self.quit = true;
+        }
+        zgui.sameLine(.{});
+
+        zgui.newLine();
         // the images //
         const style = zgui.getStyle();
         const line_args = .{
@@ -612,7 +614,6 @@ pub const UiState = struct {
         }
         zgui.endTable();
         // the images //
-        zgui.endTable();
     }
 
     pub fn deinit(self: *UiState) void {
