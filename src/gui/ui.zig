@@ -60,7 +60,7 @@ const ImagesState = struct {
         return self.images.get(id);
     }
 
-    inline fn put_image(self: *ImagesState, id: img.ImageId, image: *Image) !img.ImageHandle {
+    fn put_image(self: *ImagesState, id: img.ImageId, image: *Image) !img.ImageHandle {
         defer image.deinit();
         const handle = img.load_image(self.gfx.gctx, image);
         try self.images.add(id, handle);
@@ -71,7 +71,7 @@ const ImagesState = struct {
         return self.thumbnails.get(id);
     }
 
-    inline fn put_thumbnail(self: *ImagesState, id: img.ImageId, thumbnail: *Image) !img.ImageHandle {
+    fn put_thumbnail(self: *ImagesState, id: img.ImageId, thumbnail: *Image) !img.ImageHandle {
         defer thumbnail.deinit();
         const thumbnail_handle = img.load_image(self.gfx.gctx, thumbnail);
         try self.thumbnails.add(id, thumbnail_handle);
@@ -88,7 +88,7 @@ const ImagesState = struct {
 };
 
 fn impl_select_image(
-    buffer: *CmdChannel,
+    chan: *CmdChannel,
     alloc: std.mem.Allocator,
     fs_state: *const fs.FsState,
     thread_pool: *std.Thread.Pool,
@@ -101,12 +101,12 @@ fn impl_select_image(
         defer nfd.freePath(path);
         // this will be put in Images and will be destroyed with it
         const image_path = std.fmt.allocPrintZ(alloc, "{s}", .{path}) catch utils.oomPanic();
-        thread_pool.spawn(decode_image, .{ buffer, fs_state, image_path, true, true }) catch utils.oomPanic();
+        thread_pool.spawn(decode_image, .{ chan, fs_state, image_path, true, true }) catch utils.oomPanic();
     }
 }
 
 fn impl_select_folder(
-    buffer: *CmdChannel,
+    chan: *CmdChannel,
     alloc: std.mem.Allocator,
     fs_state: *const fs.FsState,
     thread_pool: *std.Thread.Pool,
@@ -138,7 +138,7 @@ fn impl_select_folder(
                     "{s}/{s}",
                     .{ dir_path, entry.path },
                 ) catch utils.oomPanic();
-                thread_pool.spawn(decode_image, .{ buffer, fs_state, file_path, true, true }) catch utils.oomPanic();
+                thread_pool.spawn(decode_image, .{ chan, fs_state, file_path, true, true }) catch utils.oomPanic();
             }
         }
     }
@@ -151,7 +151,7 @@ const ImplLoadThumbail = struct {
 
 // ids_to_load will be freed by this function.
 fn impl_load_thumbnails(
-    buffer: *CmdChannel,
+    chan: *CmdChannel,
     alloc: std.mem.Allocator,
     fs_state: *const fs.FsState,
     thread_pool: *std.Thread.Pool,
@@ -163,15 +163,15 @@ fn impl_load_thumbnails(
         defer alloc.free(thumbnail_path);
         const access_result = std.fs.accessAbsoluteZ(thumbnail_path, .{});
         if (access_result == std.fs.Dir.AccessError.FileNotFound) {
-            try thread_pool.spawn(decode_image, .{ buffer, fs_state, thumb.image_path, true, false });
+            try thread_pool.spawn(decode_image, .{ chan, fs_state, thumb.image_path, true, false });
         } else {
-            try thread_pool.spawn(decode_thumbnail, .{ buffer, alloc, fs_state, thumb.id });
+            try thread_pool.spawn(decode_thumbnail, .{ chan, alloc, fs_state, thumb.id });
         }
     }
 }
 
 fn decode_image(
-    buffer: *CmdChannel,
+    chan: *CmdChannel,
     fs_state: *const fs.FsState,
     file_path: [:0]const u8,
     make_thumbnail: bool,
@@ -184,25 +184,25 @@ fn decode_image(
     };
     const id = img.id.hash(image.data);
 
-    if (make_thumbnail) generate_thumbnail(buffer, fs_state, &image, id);
+    if (make_thumbnail) generate_thumbnail(chan, fs_state, &image, id);
 
-    buffer.tryPush(.{ .add_image = .{ .image = image, .id = id } }) catch utils.channelCapacityPanic();
+    chan.tryPush(.{ .add_image = .{ .image = image, .id = id } }) catch utils.channelCapacityPanic();
     if (do_add) {
-        buffer.tryPush(.{ .db_add_image = .{ .path = file_path, .id = id } }) catch utils.channelCapacityPanic();
-        buffer.tryPush(.{ .show_image = .{ .id = id } }) catch utils.channelCapacityPanic();
+        chan.tryPush(.{ .db_add_image = .{ .path = file_path, .id = id } }) catch utils.channelCapacityPanic();
+        chan.tryPush(.{ .show_image = .{ .id = id } }) catch utils.channelCapacityPanic();
     }
 }
 
-fn generate_thumbnail(buffer: *CmdChannel, fs_state: *const fs.FsState, image: *const Image, id: img.ImageId) void {
+fn generate_thumbnail(chan: *CmdChannel, fs_state: *const fs.FsState, image: *const Image, id: img.ImageId) void {
     var thumbnail = img.make_thumbnail(image);
     fs_state.write_thumbnail(id, &thumbnail) catch |err| {
         std.log.err("could not write thumbnail: {}", .{err});
     };
-    buffer.tryPush(.{ .add_thumbnail = .{ .image = thumbnail, .id = id } }) catch utils.channelCapacityPanic();
+    chan.tryPush(.{ .add_thumbnail = .{ .image = thumbnail, .id = id } }) catch utils.channelCapacityPanic();
 }
 
 fn decode_thumbnail(
-    buffer: *CmdChannel,
+    chan: *CmdChannel,
     alloc: std.mem.Allocator,
     fs_state: *const fs.FsState,
     id: img.ImageId,
@@ -215,7 +215,7 @@ fn decode_thumbnail(
         std.log.err("could not decode thumbnail image: {}", .{err});
         return;
     };
-    buffer.tryPush(.{ .add_thumbnail = .{ .image = thumbnail, .id = id } }) catch utils.channelCapacityPanic();
+    chan.tryPush(.{ .add_thumbnail = .{ .image = thumbnail, .id = id } }) catch utils.channelCapacityPanic();
 }
 
 const ShownImages = std.AutoArrayHashMap(img.ImageId, void);
