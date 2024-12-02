@@ -1,0 +1,31 @@
+name: ci build
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macOS-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: setup zig
+        uses: mlugg/setup-zig@v1.2.1
+        with:
+          version: 0.14.0-dev.2362+a47aa9dd9
+      - name: export version and commit
+        run: |
+          export LEVENT_GIT_COMMIT=${{ github.sha }}
+          export LEVENT_VERSION=${{ github.ref_name }}
+      - name: build
+        run: zig build --release=safe
+      - name: run executable
+        run: ./zig-out/bin/levent --version
