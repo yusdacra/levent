@@ -35,6 +35,12 @@ jobs:
       - name: run executable (windows)
         if: matrix.os == 'windows-latest'
         run: ./zig-out/bin/levent.exe --version
+      - name: rename executable (unix)
+        if: matrix.os != 'windows-latest'
+        run: mv ./zig-out/bin/levent ./zig-out/bin/levent-${{ matrix.os }}
+      - name: rename executable (windows)
+        if: matrix.os == 'windows-latest'
+        run: mv ./zig-out/bin/levent.exe ./zig-out/bin/levent-${{ matrix.os }}.exe
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.os }}
