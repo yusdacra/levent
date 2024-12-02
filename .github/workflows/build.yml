@@ -22,6 +22,10 @@ jobs:
         uses: mlugg/setup-zig@v1.2.1
         with:
           version: 0.14.0-dev.2362+a47aa9dd9
+      - name: get dependencies (linux)
+        uses: Eeems-Org/apt-cache-action@cbc42fbdfaab42353b24a0e537464fb0d543456a
+        with:
+          packages: libgtk-3-dev libatk-1.0-dev
       - name: build
         run: zig build -Dgit_commit=${{ github.sha }} -Dversion=${{ github.ref_name }} --release=safe
       - name: run executable (unix)
