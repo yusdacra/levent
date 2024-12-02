@@ -384,7 +384,20 @@ pub const UiState = struct {
         _ = zgui.begin(window_name, .{ .popen = is_open });
         defer zgui.end();
 
-        if (zgui.collapsingHeader(".metadata", .{.default_open = false})) {
+        if (maybe_image) |image| {
+            // the image
+            const size = image.fit_to_width_size(@intFromFloat(zgui.getWindowSize()[0]));
+            const tex_id = self.gfx.gctx.lookupResource(image.texture).?;
+            _ = zgui.beginChild("image", .{ .w = size[0], .h = size[1] });
+            zgui.image(tex_id, .{ .w = size[0], .h = size[1] });
+            zgui.endChild();
+        } else {
+            zgui.textUnformatted("loading...");
+        }
+        zgui.newLine();
+
+        const metadata_visible = zgui.collapsingHeader(".metadata", .{.default_open = true});
+        if (metadata_visible) {
             // the metadata
             _ = zgui.beginChild("image_metadata", .{
                 .child_flags = .{
@@ -416,20 +429,6 @@ pub const UiState = struct {
                 self.images_state.image_tags.add(id, new_tags) catch utils.oomPanic();
             }
             zgui.endChild();
-        }
-        zgui.newLine();
-
-        if (maybe_image) |image| {
-            // the image
-            const size = image.fit_to_width_size(
-                @intFromFloat(zgui.getWindowSize()[0]),
-            );
-            const tex_id = self.gfx.gctx.lookupResource(image.texture).?;
-            _ = zgui.beginChild("image", .{ .w = size[0], .h = size[1] });
-            zgui.image(tex_id, .{ .w = size[0], .h = size[1] });
-            zgui.endChild();
-        } else {
-            zgui.textUnformatted("loading...");
         }
     }
 
