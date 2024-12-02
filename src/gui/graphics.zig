@@ -71,7 +71,7 @@ pub fn create(allocator: std.mem.Allocator, window: *zglfw.Window) !*GraphicsSta
     };
 
     // This needs to be called *after* adding your custom fonts.
-    zgui.backend.init(window, gctx.device, @intFromEnum(zgpu.GraphicsContext.swapchain_format), @intFromEnum(zgpu.wgpu.TextureFormat.undef));
+    zgui.backend.init(window, gctx.device, @intFromEnum(gctx.swapchain_descriptor.format), @intFromEnum(zgpu.wgpu.TextureFormat.undef));
 
     // You can directly manipulate zgui.Style *before* `newFrame()` call.
     // Once frame is started (after `newFrame()` call) you have to use

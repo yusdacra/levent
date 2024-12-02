@@ -99,7 +99,7 @@ pub fn load_image(gctx: *zgpu.GraphicsContext, image: *const zstbi.Image) ImageH
     });
     const texture_view = gctx.createTextureView(texture, .{});
 
-    // TODO: we actuall need to destroy these textures after we stop using them
+    // TODO: we actually need to destroy these textures after we stop using them
     gctx.queue.writeTexture(
         .{ .texture = gctx.lookupResource(texture).? },
         .{

@@ -42,6 +42,9 @@ pub fn build(b: *std.Build) void {
     const nfd = b.dependency("nfd", .{});
     exe.root_module.addImport("nfd", nfd.module("nfd"));
 
+    const clap = b.dependency("clap", .{});
+    exe.root_module.addImport("clap", clap.module("clap"));
+
     const exe_options = b.addOptions();
     exe.root_module.addOptions("build_options", exe_options);
 
