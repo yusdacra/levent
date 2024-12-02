@@ -665,13 +665,6 @@ pub fn create(
 
     try impl_load_thumbnails(cmd_channel, allocator, fs_state, thread_pool, thumbnails_to_load);
 
-    // const thumbnail_thread = try std.Thread.spawn(
-    //     .{},
-    //     impl_load_thumbnails,
-    //     .{ cmd_channel, allocator, fs_state, thumbnails_to_load },
-    // );
-    // thumbnail_thread.detach();
-
     const state = try allocator.create(UiState);
     state.* = .{
         .images_state = .{

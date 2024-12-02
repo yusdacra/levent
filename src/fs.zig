@@ -11,20 +11,29 @@ fn find_cache_dir(alloc: std.mem.Allocator) ![]const u8 {
     var envmap = try std.process.getEnvMap(alloc);
     defer envmap.deinit();
     if (envmap.get("XDG_CACHE_HOME")) |cache_dir| {
-        return try std.fmt.allocPrint(alloc, "{s}/levent", .{cache_dir});
+        return try std.fs.path.join(alloc, &.{ cache_dir, "levent" });
     } else if (envmap.get("HOME")) |home_dir| {
-        return try std.fmt.allocPrint(alloc, "{s}/.cache/levent", .{home_dir});
+        return try std.fs.path.join(alloc, &.{ home_dir, ".cache", "levent" });
     } else if (envmap.get("TEMP")) |cache_dir| {
-        return try std.fmt.allocPrint(alloc, "{s}/levent", .{cache_dir});
+        return try std.fs.path.join(alloc, &.{ cache_dir, "levent" });
     } else {
-        std.log.err("no cache dir found", .{});
-        return FindDirError.NotFound;
+        std.log.warn("no cache dir found; using current working directory", .{});
+        const cwd = try std.process.getCwdAlloc(alloc);
+        defer alloc.free(cwd);
+        return try std.fs.path.join(alloc, &.{ cwd, "levent_cache" });
     }
 }
 
 // it is up to the caller to destroy the resulting pointer
 fn find_data_dir(alloc: std.mem.Allocator) ![]const u8 {
-    return try std.fs.getAppDataDir(alloc, "levent");
+    const result = std.fs.getAppDataDir(alloc, "levent");
+    if (result == std.fs.GetAppDataDirError.AppDataDirUnavailable) {
+        std.log.warn("no data dir found; using current working directory", .{});
+        const cwd = try std.process.getCwdAlloc(alloc);
+        defer alloc.free(cwd);
+        return try std.fs.path.join(alloc, &.{ cwd, "levent_data" });
+    }
+    return try result;
 }
 
 // this function assumes zstbi is initialized.
@@ -67,17 +76,15 @@ pub const FsState = struct {
             }
         };
 
-        const image_paths_db_path = try std.fmt.allocPrintZ(
+        const image_paths_db_path = try std.fs.path.joinZ(
             alloc,
-            "{s}/image_paths.lvnt",
-            .{data_dir},
+            &.{ data_dir, "image_paths.lvnt" },
         );
         errdefer alloc.free(image_paths_db_path);
 
-        const image_tags_db_path = try std.fmt.allocPrintZ(
+        const image_tags_db_path = try std.fs.path.joinZ(
             alloc,
-            "{s}/image_tags.lvnt",
-            .{data_dir},
+            &.{ data_dir, "image_tags.lvnt" },
         );
         errdefer alloc.free(image_tags_db_path);
 
@@ -175,6 +182,17 @@ pub const FsState = struct {
         // save db file
         db_value.writeToFile(db_file) catch |err| {
             std.log.err("could not save to db file: {}", .{err});
+        };
+    }
+
+    pub fn delete_db_file(self: *const FsState, comptime DbType: type) void {
+        const db_path = self.get_db_filepath(DbType);
+
+        std.fs.deleteFileAbsoluteZ(db_path) catch |err| {
+            switch (err) {
+                std.fs.Dir.DeleteFileError.FileNotFound => std.log.info("db file {s} does not exist, skipping", .{db_path}),
+                else => std.log.err("failed to delete db file ({s}): {}", .{ db_path, err }),
+            }
         };
     }
 
