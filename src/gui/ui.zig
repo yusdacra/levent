@@ -91,6 +91,7 @@ fn impl_select_image(
     buffer: *CmdChannel,
     alloc: std.mem.Allocator,
     fs_state: *const fs.FsState,
+    thread_pool: *std.Thread.Pool,
 ) void {
     const file_path = nfd.openFileDialog(null, null) catch |err| {
         std.log.err("cant open file dialog: {}", .{err});
@@ -100,7 +101,7 @@ fn impl_select_image(
         defer nfd.freePath(path);
         // this will be put in Images and will be destroyed with it
         const image_path = std.fmt.allocPrintZ(alloc, "{s}", .{path}) catch utils.oomPanic();
-        decode_image(buffer, fs_state, image_path, true, true);
+        thread_pool.spawn(decode_image, .{ buffer, fs_state, image_path, true, true }) catch utils.oomPanic();
     }
 }
 
@@ -108,6 +109,7 @@ fn impl_select_folder(
     buffer: *CmdChannel,
     alloc: std.mem.Allocator,
     fs_state: *const fs.FsState,
+    thread_pool: *std.Thread.Pool,
 ) void {
     const maybe_dir_path = nfd.openFolderDialog(null) catch |err| {
         std.log.err("cant open folder dialog: {}", .{err});
@@ -136,7 +138,7 @@ fn impl_select_folder(
                     "{s}/{s}",
                     .{ dir_path, entry.path },
                 ) catch utils.oomPanic();
-                decode_image(buffer, fs_state, file_path, true, true);
+                thread_pool.spawn(decode_image, .{ buffer, fs_state, file_path, true, true }) catch utils.oomPanic();
             }
         }
     }
@@ -239,7 +241,7 @@ pub const UiState = struct {
     fn select_image(self: *Self) void {
         self.thread_pool.spawn(
             impl_select_image,
-            .{ self.cmd_channel, self.alloc, self.fs_state },
+            .{ self.cmd_channel, self.alloc, self.fs_state, self.thread_pool },
         ) catch |err| {
             std.log.err("cannot spawn thread: {}", .{err});
             return;
@@ -249,7 +251,7 @@ pub const UiState = struct {
     fn select_folder(self: *Self) void {
         self.thread_pool.spawn(
             impl_select_folder,
-            .{ self.cmd_channel, self.alloc, self.fs_state },
+            .{ self.cmd_channel, self.alloc, self.fs_state, self.thread_pool },
         ) catch |err| {
             std.log.err("cannot spawn thread: {}", .{err});
             return;
